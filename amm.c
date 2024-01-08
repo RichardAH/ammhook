@@ -37,19 +37,23 @@ uint8_t txn_remit[60000] =
 
 /*   2, 229 */  0xF0U, 0x5CU,                                                               /* lead-in amount array */
 /*   2, 231 */  0xE0U, 0x5BU,                                                               /*lead-in amount entry A*/
-/*  49, 233 */  0x61U,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,                                            /* amount A */
+/*  49, 233 */  0x61U,
+                0,0,0,0,0,0,0,0,
+                0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,                                            /* amount A */
                 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
-/*   2, 282 */  0xE1, 0xE0U, 0x5BU,                                                         /*lead-in amount entry B*/
-/*  49, 284 */  0x61U,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,                                            /* amount B */
+/*   3, 282 */  0xE1, 0xE0U, 0x5BU,                                                         /*lead-in amount entry B*/
+/*  49, 285 */  0x61U,
+                0,0,0,0,0,0,0,0,
+                0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,                                            /* amount B */
                 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
-/*   2, 333 */  0xE1, 0xF1                                                 /* lead out, may also appear at end of A */
-/*   -, 335 */                
+/*   2, 334 */  0xE1, 0xF1                                                 /* lead out, may also appear at end of A */
+/*   -, 336 */                
 };
 
 #define TXN_CUR_A (txn_remit + 233)
 #define TXN_CUR_B (txn_remit + 284)
-#define OTXNACC (txn_remit + 91)
-#define HOOKACC (txn_remit + 69)
+#define OTXNACC (txn_remit + 93)
+#define HOOKACC (txn_remit + 71)
 #define TXN_EDET (txn_remit + 113)
 
 #define BE_DROPS(drops)\
@@ -68,7 +72,7 @@ uint8_t txn_remit[60000] =
 
 #define DO_REMIT(early)\
 {\
-        int64_t bytes = 335;\
+        int64_t bytes = 336;\
         if (early)\
         {\
             txn_remit[283] = 0xF1U;\
@@ -101,6 +105,8 @@ int64_t hook(uint32_t r)
 {
     etxn_reserve(1);
     _g(1,1);
+
+    TRACESTR("AMM starting");
 
     int64_t tt = otxn_type();
 
@@ -138,15 +144,15 @@ int64_t hook(uint32_t r)
     #define amm_cur_A ammcur
     #define amm_cur_B (ammcur + 40)
     uint8_t ammcur[80];
-    int64_t is_setup = state(SBUF(ammcur), "CUR", 3) == 80;
+    int64_t already_setup = (state(SBUF(ammcur), "CUR", 3) == 80);
 
     // and grab the amounts, constant and current outstanding liquidity points
     int64_t amm_amt_A, amm_amt_B, G, owner_lp, total_lp;
-    
-    if (is_setup && (state(SVAR(amm_amt_A), "A", 1) != 8 ||
-        state(SVAR(amm_amt_B), "B", 1) != 8 ||
-        state(SVAR(G), "G", 1) != 8) ||
-        state(SVAR(total_lp), "TOT", 3) != 8)
+  
+    if (already_setup && !(state(SVAR(amm_amt_A), "A", 1) == 8 &&
+        state(SVAR(amm_amt_B), "B", 1) == 8 &&
+        state(SVAR(G), "G", 1) == 8 &&
+        state(SVAR(total_lp), "TOT", 3) == 8))
         NOPE("AMM: Error loading hook state.");
     
     // grab the user's liquidity tokens, if they have any
@@ -157,7 +163,7 @@ int64_t hook(uint32_t r)
     if (sent_currency_count == 0)
     {
         // can't withdraw unless it's already created
-        if (!is_setup)
+        if (!already_setup)
             NOPE("AMM: Setup the AMM by remitting two currencies.");
 
         // can't withdraw if you don't have tokens
@@ -244,10 +250,13 @@ int64_t hook(uint32_t r)
     if (slot_subarray(2, 0, 3) != 3)
         NOPE("AMM: Error slotting currency A");
 
-    int64_t has_sent_B = slot_subarray(2, 1, 4) == 4;
+    int64_t has_sent_B = (slot_subarray(2, 1, 4) == 4);
 
-    int64_t sent_xah_A = slot_type(3, 1) == 1;
-    int64_t sent_xah_B = slot_type(4, 1) == 1;
+    slot_subfield(3, sfAmount, 3);
+    slot_subfield(4, sfAmount, 4);
+
+    int64_t sent_xah_A = (slot_type(3, 1) == 1);
+    int64_t sent_xah_B = (slot_type(4, 1) == 1);
 
     slot(SBUF(sent_cur_A), 3);
 
@@ -262,7 +271,7 @@ int64_t hook(uint32_t r)
         NOPE("AMM: Both currencies cannot be the same.");
 
     // check if the AMM has been setup yet
-    if (!is_setup)
+    if (!already_setup)
     {
         // not setup, so whatever they sent is the first liquidity and sets the rate
         if (!has_sent_B)
@@ -274,10 +283,10 @@ int64_t hook(uint32_t r)
         
         // copy currency A into the array
         if (!sent_xah_A)
-            COPY40(sent_cur_A+1, ammcur);
+            COPY40(sent_cur_A + 8, ammcur);
 
         if (!sent_xah_B)
-            COPY40(sent_cur_B+1, ammcur + 40);
+            COPY40(sent_cur_B + 8, ammcur + 40);
 
         if (sent_amt_A <= 0 || sent_amt_B <= 0)
             NOPE("AMM: Amounts must be positive non-zero.");
@@ -285,6 +294,9 @@ int64_t hook(uint32_t r)
         // geometric mean constant
         int64_t G = float_multiply(sent_amt_A, sent_amt_B);
 
+        TRACEXFL(G);
+        TRACEXFL(sent_amt_A);
+        TRACEXFL(sent_amt_B);
         state_set(SBUF(ammcur), "CUR", 3);
         state_set(SVAR(sent_amt_A), "A", 1);
         state_set(SVAR(sent_amt_B), "B", 1);
@@ -297,19 +309,23 @@ int64_t hook(uint32_t r)
         DONE("AMM: Created.");        
     }
 
+    // trace(SBUF("sent_cur_A"), sent_cur_A, 40, 1);
+    // trace(SBUF("amm_cur_A "), amm_cur_A, 40, 1);
+    // trace(SBUF("sent_cur_B"), sent_cur_B, 40, 1);
+    // trace(SBUF("amm_cur_B "), amm_cur_B, 40, 1);
 
     // find out which sent currencies map to which currencies in the AMM, if any
     int64_t mapA = -1;
-    if (BUFFER_EQUAL_40(sent_cur_A, amm_cur_A))
+    if (BUFFER_EQUAL_40(sent_cur_A + 8, amm_cur_A))
         mapA = 0;
-    else if (BUFFER_EQUAL_40(sent_cur_A, amm_cur_B))
+    else if (BUFFER_EQUAL_40(sent_cur_A + 8, amm_cur_B))
         mapA = 1;
 
 
     int64_t mapB = -1;
-    if (BUFFER_EQUAL_40(sent_cur_B, amm_cur_A))
+    if (BUFFER_EQUAL_40(sent_cur_B + 8, amm_cur_A))
         mapB = 0;
-    else if (BUFFER_EQUAL_40(sent_cur_B, amm_cur_B))
+    else if (BUFFER_EQUAL_40(sent_cur_B + 8, amm_cur_B))
         mapB = 1;
 
 
@@ -399,6 +415,8 @@ int64_t hook(uint32_t r)
 
     // execution to here means they are not adding liquidity, but rather using the pool
 
+    trace_num(SBUF("G"), G);
+    trace(SBUF("pre"), txn_remit, 285, 1);
     if (has_sent_A)
     {
         // sent only A, so return only B
@@ -407,10 +425,23 @@ int64_t hook(uint32_t r)
 
         int64_t calc_amt_B = float_divide(G, new_amt_A);
 
-        int64_t diff_B = float_sum(calc_amt_B, float_negate(amm_amt_B));
+        int64_t diff_B = float_sum(amm_amt_B, float_negate(calc_amt_B));
 
         if (diff_B <= 0 || !float_compare(diff_B, 0, COMPARE_GREATER))
             NOPE("AMM: Error computing currency B.");
+
+        TRACEXFL(amm_amt_B);
+        
+        // subtract
+        amm_amt_B = float_sum(amm_amt_B, float_negate(diff_B));
+
+        if (amm_amt_B <= 0)
+            NOPE("AMM: Error computing currency B.");
+
+        TRACEXFL(amm_amt_A);
+        TRACEXFL(amm_amt_B);
+
+        state_set(SVAR(amm_amt_B), "B", 1);
 
         // write amount into remit (it's written to spot A in the out array, but it's currency B)
         float_sto(TXN_CUR_A, 49, ammcur +  40, 20, ammcur + 60, 20, diff_B, sfAmount);
@@ -425,10 +456,26 @@ int64_t hook(uint32_t r)
 
         int64_t calc_amt_A = float_divide(G, new_amt_B);
 
-        int64_t diff_A = float_sum(calc_amt_A, float_negate(amm_amt_A));
+        int64_t diff_A = float_sum(amm_amt_A, float_negate(calc_amt_A));
 
+        TRACEXFL(new_amt_B);
+        TRACEXFL(calc_amt_A);
+        TRACEXFL(diff_A);
         if (diff_A <= 0 || !float_compare(diff_A, 0, COMPARE_GREATER))
             NOPE("AMM: Error computing currency A.");
+
+        TRACEXFL(amm_amt_A);
+        
+        // subtract
+        amm_amt_A = float_sum(amm_amt_A, float_negate(diff_A));
+
+        if (amm_amt_A <= 0)
+            NOPE("AMM: Error computing currency A.");
+
+        TRACEXFL(amm_amt_A);
+        TRACEXFL(amm_amt_B);
+
+        state_set(SVAR(amm_amt_A), "A", 1);
 
         // write amount into remit
         float_sto(TXN_CUR_A, 49, ammcur +  0, 20, ammcur + 20, 20, diff_A, sfAmount);
