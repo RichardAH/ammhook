@@ -121,7 +121,7 @@ int64_t hook(uint32_t r)
     
     otxn_slot(1);
 
-    if (slot_subfield(1, sfMintURIToken, 2) == 2 || slot_subfield(1, sfURITokenIDs) == 2)
+    if (slot_subfield(1, sfMintURIToken, 2) == 2 || slot_subfield(1, sfURITokenIDs, 2) == 2)
         NOPE("AMM: Cannot accept REMIT with URITokens.");
     
     // check how many currencies were sent
@@ -141,7 +141,7 @@ int64_t hook(uint32_t r)
     int64_t is_setup = state(SBUF(ammcur), "CUR", 3) == 80;
 
     // and grab the amounts, constant and current outstanding liquidity points
-    int64_t amm_amt_A, amm_amt_B, G, owner_lp total_lp;
+    int64_t amm_amt_A, amm_amt_B, G, owner_lp, total_lp;
     
     if (is_setup && (state(SVAR(amm_amt_A), "A", 1) != 8 ||
         state(SVAR(amm_amt_B), "B", 1) != 8 ||
@@ -150,7 +150,6 @@ int64_t hook(uint32_t r)
         NOPE("AMM: Error loading hook state.");
     
     // grab the user's liquidity tokens, if they have any
-    int64_t owner_lp;
     state(SVAR(owner_lp), OTXNACC, 20);
 
     // First operation we'll deal with is a withdrawal. This happens if they send an empty remit.
@@ -205,8 +204,8 @@ int64_t hook(uint32_t r)
         else
         { 
             // compute the new values
-            amm_amt_A = send_all A ? amm_amt_A : float_sum(amm_amt_A, float_negate(out_amt_A));
-            amt_amt_B = send_all_B ? amm_amt_B : float_sum(amm_amt_B, float_negate(out_amm_B));
+            amm_amt_A = send_all_A ? amm_amt_A : float_sum(amm_amt_A, float_negate(out_amt_A));
+            amm_amt_B = send_all_B ? amm_amt_B : float_sum(amm_amt_B, float_negate(out_amt_B));
 
             // compute new G
             int64_t new_G = float_multiply(amm_amt_A, amm_amt_B);
