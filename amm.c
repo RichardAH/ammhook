@@ -5,6 +5,16 @@
 #define NOPE(x)\
     return rollback(x, sizeof(x), __LINE__);
 
+#define COPY20(src,dst)\
+{\
+    uint32_t* x = (dst);\
+    uint32_t* y = (src);\
+    *x++ = *y++;\
+    *x++ = *y++;\
+    *x++ = *y++;\
+    *x++ = *y++;\
+    *x++ = *y++;\
+}
 
 #define COPY40(src,dst)\
 {\
@@ -101,6 +111,22 @@ uint8_t txn_remit[60000] =
             rollback(SBUF("AMM: Emit failed."), __LINE__);\
 }
 
+uint8_t query_out[64] = {
+/* size,upto */   
+/*   8,   0  */ 'A', 'M', 'M', ' ', 'P', 'B', 'D', 0,
+/*  20,   8  */  0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0,  0,0,0,0,  // currency
+/*  20,  28  */  0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0,  0,0,0,0,  // issuer
+/*   8,  48  */  0,0,0,0, 0,0,0,0,                              // xfl amt
+/*   8,  56  */  0,0,0,0, 0,0,0,0                               // xfl exchange rate
+/*   -,  64  */
+};
+
+#define QOUT_ISU (query_out + 28)
+#define QOUT_CUR (query_out + 8)
+#define QOUT_AMT (*(uint64_t*)(query_out + 48))
+#define QOUT_XCH (*(uint64_t*)(query_out + 56))
+#define QOUT_SIZE 64
+
 int64_t hook(uint32_t r)
 {
     etxn_reserve(1);
@@ -116,9 +142,87 @@ int64_t hook(uint32_t r)
 
     if (BUFFER_EQUAL_20(OTXNACC, HOOKACC))
         DONE("AMM: Passing outgoing txn.");
+    
+    if (tt != ttREMIT && tt != ttINVOKE)
+        DONE("AMM: Passing non-REMIT non-INVOKE txn.");
+   
+    // if the AMM is already setup grab the currency information for it 
+    #define amm_cur_A ammcur
+    #define amm_cur_B (ammcur + 40)
+    uint8_t ammcur[80];
+    int64_t already_setup = (state(SBUF(ammcur), "CUR", 3) == 80);
 
-    if (tt != ttREMIT)
-        DONE("AMM: Passing non-REMIT txn.");
+    // grab the amounts, constant and current outstanding liquidity points
+    int64_t amm_amt_A, amm_amt_B, G, owner_lp, total_lp;
+  
+    if (already_setup && !(state(SVAR(amm_amt_A), "A", 1) == 8 &&
+        state(SVAR(amm_amt_B), "B", 1) == 8 &&
+        state(SVAR(G), "G", 1) == 8 &&
+        state(SVAR(total_lp), "TOT", 3) == 8))
+        NOPE("AMM: Error loading hook state.");
+    
+    int64_t is_query = (tt == ttINVOKE);
+    uint8_t isu[20];
+    uint8_t cur[20];
+    int64_t query_amt;
+
+    // query interface XAS-1
+    if (is_query)
+    {
+
+        if (!already_setup)
+            NOPE("AMM: Querying AMM that has not yet been setup. Remit two currencies to setup.");
+        if (hook_param(SBUF(isu), "ISU", 3) != 20)
+            NOPE("AMM: Query lacked 20 byte ISU (Issuer) parameter.");
+        if (hook_param(SBUF(cur), "CUR", 3) != 20)
+            NOPE("AMM: Query lacked 20 byte CUR (Currency) parameter.");
+        if (hook_param(SVAR(query_amt), "AMT", 3) != 8)
+            NOPE("AMM: Query lacked 8 byte XFL AMT (Amount) parameter.");
+        if (query_amt <= 0 || !float_compare(query_amt, 0, COMPARE_GREATER))
+            NOPE("AMM: Query invalid amount. Try a positive LE XFL.");
+
+
+        if (BUFFER_EQUAL_20(cur, amm_cur_A) && BUFFER_EQUAL_20(isu, amm_cur_A + 20))
+        {
+            // currency A
+            int64_t new_amt_A = float_sum(amm_amt_A, query_amt);
+            int64_t calc_amt_B = float_divide(G, new_amt_A);
+            int64_t diff_B = float_sum(amm_amt_B, float_negate(calc_amt_B));
+
+            if (diff_B <= 0 || !float_compare(diff_B, 0, COMPARE_GREATER))
+                NOPE("AMM: Error computing currency B.");
+
+            COPY20(amm_cur_B, QOUT_CUR);
+            COPY20(amm_cur_B + 20, QOUT_ISU);
+            
+            QOUT_AMT = diff_B;
+            int64_t rate = float_divide(query_amt, diff_B);
+            QOUT_XCH = rate;
+            // return query result
+            return accept(SBUF(query_out), __LINE__);
+        }
+        else
+        if (BUFFER_EQUAL_20(cur, amm_cur_B) && BUFFER_EQUAL_20(isu, amm_cur_B + 20))
+        {
+            // currency B
+            int64_t new_amt_B = float_sum(amm_amt_B, query_amt);
+            int64_t calc_amt_A = float_divide(G, new_amt_B);
+            int64_t diff_A = float_sum(amm_amt_A, float_negate(calc_amt_A));
+
+            if (diff_A <= 0 || !float_compare(diff_A, 0, COMPARE_GREATER))
+                NOPE("AMM: Error computing currency A.");
+
+            COPY20(amm_cur_A, QOUT_CUR);
+            COPY20(amm_cur_A + 20, QOUT_ISU);
+            
+            QOUT_AMT = diff_A;
+            int64_t rate = float_divide(query_amt, diff_A);
+            QOUT_XCH = rate;
+            // return query result
+            return accept(SBUF(query_out), __LINE__);
+        }
+        NOPE("AMM: Query failed. This AMM does not contain that currency.");
+    }
 
     // execution to here means it's an incoming remit
 
@@ -140,21 +244,6 @@ int64_t hook(uint32_t r)
     if (sent_currency_count > 2)
         NOPE("AMM: Send either 0, 1 or 2 currencies to use AMM.");
    
-    // if the AMM is already setup grab the currency information for it 
-    #define amm_cur_A ammcur
-    #define amm_cur_B (ammcur + 40)
-    uint8_t ammcur[80];
-    int64_t already_setup = (state(SBUF(ammcur), "CUR", 3) == 80);
-
-    // and grab the amounts, constant and current outstanding liquidity points
-    int64_t amm_amt_A, amm_amt_B, G, owner_lp, total_lp;
-  
-    if (already_setup && !(state(SVAR(amm_amt_A), "A", 1) == 8 &&
-        state(SVAR(amm_amt_B), "B", 1) == 8 &&
-        state(SVAR(G), "G", 1) == 8 &&
-        state(SVAR(total_lp), "TOT", 3) == 8))
-        NOPE("AMM: Error loading hook state.");
-    
     // grab the user's liquidity tokens, if they have any
     state(SVAR(owner_lp), OTXNACC, 20);
 
@@ -239,7 +328,8 @@ int64_t hook(uint32_t r)
         DONE("AMM: Emitted withdraw.");
         return 0;
     }
-    else if (sent_currency_count != 1 && sent_currency_count != 2)
+    
+    if (sent_currency_count != 1 && sent_currency_count != 2)
         NOPE("AMM: Send exactly 1 or 2 currencies.");
 
     // execution to here means we're either using the pool or depositing to the pool
@@ -306,7 +396,7 @@ int64_t hook(uint32_t r)
         owner_lp = 100;
         state_set(SVAR(owner_lp), OTXNACC, 20);
         state_set(SVAR(owner_lp), "TOT", 3);
-        DONE("AMM: Created.");        
+        DONE("AMM: Created.");
     }
 
     // trace(SBUF("sent_cur_A"), sent_cur_A, 40, 1);
@@ -354,7 +444,6 @@ int64_t hook(uint32_t r)
     }
 
     // execution to here means the A and B variables in the sent namespace match those in the amm namespace.
-
     if (has_sent_A && has_sent_B)
     {
         // first scenario: they sent both currencies, this is a deposit
@@ -410,13 +499,10 @@ int64_t hook(uint32_t r)
             NOPE("AMM: Error crediting liquidity (reserves?)");
 
         DONE("AMM: Liquidity added.");
-        return 0;
     }
 
     // execution to here means they are not adding liquidity, but rather using the pool
 
-    trace_num(SBUF("G"), G);
-    trace(SBUF("pre"), txn_remit, 285, 1);
     if (has_sent_A)
     {
         // sent only A, so return only B
@@ -445,12 +531,8 @@ int64_t hook(uint32_t r)
 
         // write amount into remit (it's written to spot A in the out array, but it's currency B)
         float_sto(TXN_CUR_A, 49, ammcur +  40, 20, ammcur + 60, 20, diff_B, sfAmount);
-
-        DO_REMIT(1);
-        DONE("AMM: Emitted remit currency B.");
     }
-
-    else // has_sent_B
+    else
     {
         int64_t new_amt_B = float_sum(amm_amt_B, sent_amt_B);
 
@@ -479,12 +561,10 @@ int64_t hook(uint32_t r)
 
         // write amount into remit
         float_sto(TXN_CUR_A, 49, ammcur +  0, 20, ammcur + 20, 20, diff_A, sfAmount);
-
-        DO_REMIT(1);
-        DONE("AMM: Emitted remit currency A.");
     }
 
-    NOPE("AMM: Unreachable.");
+    DO_REMIT(1);
+    DONE("AMM: Emitted remit currency B.");
     return 0;
 }
 
