@@ -4,7 +4,7 @@
     return accept(x, sizeof(x), __LINE__);
 #define NOPE(x)\
     return rollback(x, sizeof(x), __LINE__);
-
+#define MAX_AMM_FEE 6057837899185946624ULL /* 5% */
 #define COPY20(src,dst)\
 {\
     uint32_t* x = (dst);\
@@ -111,22 +111,6 @@ uint8_t txn_remit[60000] =
             rollback(SBUF("AMM: Emit failed."), __LINE__);\
 }
 
-uint8_t query_out[64] = {
-/* size,upto */   
-/*   8,   0  */ 'A', 'M', 'M', ' ', 'P', 'B', 'D', 0,
-/*  20,   8  */  0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0,  0,0,0,0,  // currency
-/*  20,  28  */  0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0,  0,0,0,0,  // issuer
-/*   8,  48  */  0,0,0,0, 0,0,0,0,                              // xfl amt
-/*   8,  56  */  0,0,0,0, 0,0,0,0                               // xfl exchange rate
-/*   -,  64  */
-};
-
-#define QOUT_ISU (query_out + 28)
-#define QOUT_CUR (query_out + 8)
-#define QOUT_AMT (*(uint64_t*)(query_out + 48))
-#define QOUT_XCH (*(uint64_t*)(query_out + 56))
-#define QOUT_SIZE 64
-
 int64_t hook(uint32_t r)
 {
     etxn_reserve(1);
@@ -143,8 +127,8 @@ int64_t hook(uint32_t r)
     if (BUFFER_EQUAL_20(OTXNACC, HOOKACC))
         DONE("AMM: Passing outgoing txn.");
     
-    if (tt != ttREMIT && tt != ttINVOKE)
-        DONE("AMM: Passing non-REMIT non-INVOKE txn.");
+    if (tt != ttREMIT)
+        DONE("AMM: Passing non-REMIT txn.");
    
     // if the AMM is already setup grab the currency information for it 
     #define amm_cur_A ammcur
@@ -153,78 +137,59 @@ int64_t hook(uint32_t r)
     int64_t already_setup = (state(SBUF(ammcur), "CUR", 3) == 80);
 
     // grab the amounts, constant and current outstanding liquidity points
-    int64_t amm_amt_A, amm_amt_B, G, owner_lp, total_lp;
+    int64_t amm_amt_A, amm_amt_B, G, total_lp;
   
-    if (already_setup && !(state(SVAR(amm_amt_A), "A", 1) == 8 &&
-        state(SVAR(amm_amt_B), "B", 1) == 8 &&
-        state(SVAR(G), "G", 1) == 8 &&
-        state(SVAR(total_lp), "TOT", 3) == 8))
-        NOPE("AMM: Error loading hook state.");
-    
-    int64_t is_query = (tt == ttINVOKE);
-    uint8_t isu[20];
-    uint8_t cur[20];
-    int64_t query_amt;
+    // owner data is packed int64_t LE sent and retrieved in memory format from hook state
+    int64_t owner_data[2] = { 0, 0 }; 
+    #define owner_lp owner_data[0];
+    #define owner_fee_setting owner_data[1];
 
-    // query interface XAS-1
-    if (is_query)
+    int64_t amm_fee_accumulator = 0;
+
+    // compute current fee accumulator contribution
+    int64_t owner_fac_contribution = float_multiply(owner_lp, owner_fee_setting);
+
+  
+    if (already_setup)
     {
-
-        if (!already_setup)
-            NOPE("AMM: Querying AMM that has not yet been setup. Remit two currencies to setup.");
-        if (hook_param(SBUF(isu), "ISU", 3) != 20)
-            NOPE("AMM: Query lacked 20 byte ISU (Issuer) parameter.");
-        if (hook_param(SBUF(cur), "CUR", 3) != 20)
-            NOPE("AMM: Query lacked 20 byte CUR (Currency) parameter.");
-        if (hook_param(SVAR(query_amt), "AMT", 3) != 8)
-            NOPE("AMM: Query lacked 8 byte XFL AMT (Amount) parameter.");
-        if (query_amt <= 0 || !float_compare(query_amt, 0, COMPARE_GREATER))
-            NOPE("AMM: Query invalid amount. Try a positive LE XFL.");
-
-
-        if (BUFFER_EQUAL_20(cur, amm_cur_A) && BUFFER_EQUAL_20(isu, amm_cur_A + 20))
-        {
-            // currency A
-            int64_t new_amt_A = float_sum(amm_amt_A, query_amt);
-            int64_t calc_amt_B = float_divide(G, new_amt_A);
-            int64_t diff_B = float_sum(amm_amt_B, float_negate(calc_amt_B));
-
-            if (diff_B <= 0 || !float_compare(diff_B, 0, COMPARE_GREATER))
-                NOPE("AMM: Error computing currency B.");
-
-            COPY20(amm_cur_B, QOUT_CUR);
-            COPY20(amm_cur_B + 20, QOUT_ISU);
-            
-            QOUT_AMT = diff_B;
-            int64_t rate = float_divide(query_amt, diff_B);
-            QOUT_XCH = rate;
-            // return query result
-            return accept(SBUF(query_out), __LINE__);
-        }
-        else
-        if (BUFFER_EQUAL_20(cur, amm_cur_B) && BUFFER_EQUAL_20(isu, amm_cur_B + 20))
-        {
-            // currency B
-            int64_t new_amt_B = float_sum(amm_amt_B, query_amt);
-            int64_t calc_amt_A = float_divide(G, new_amt_B);
-            int64_t diff_A = float_sum(amm_amt_A, float_negate(calc_amt_A));
-
-            if (diff_A <= 0 || !float_compare(diff_A, 0, COMPARE_GREATER))
-                NOPE("AMM: Error computing currency A.");
-
-            COPY20(amm_cur_A, QOUT_CUR);
-            COPY20(amm_cur_A + 20, QOUT_ISU);
-            
-            QOUT_AMT = diff_A;
-            int64_t rate = float_divide(query_amt, diff_A);
-            QOUT_XCH = rate;
-            // return query result
-            return accept(SBUF(query_out), __LINE__);
-        }
-        NOPE("AMM: Query failed. This AMM does not contain that currency.");
+        // load and sanity check values
+        if (!(state(SVAR(amm_amt_A), "A", 1) == 8 &&
+            state(SVAR(amm_amt_B), "B", 1) == 8 &&
+            state(SVAR(G), "G", 1) == 8 &&
+            state(SVAR(total_lp), "TOT", 3) == 8 &&
+            state(SVAR(amm_fee_accumulator), "FAC", 3) == 8))
+            NOPE("AMM: Error loading hook state.");
     }
 
-    // execution to here means it's an incoming remit
+    int64_t amm_fee = float_divide(amm_fee_accumulator, total_lp);
+
+    // clamp the fee to the allowable range
+    if (float_compare(amm_fee, 0, COMPARE_LESS) == 1 || amm_fee < 0)
+        amm_fee = 0;
+    else if (float_compare(amm_fee, MAX_AMM_FEE, COMPARE_GREATER) == 1)
+        amm_fee = MAX_AMM_FEE;
+
+    // invert the fee so that it can be multiplied against amounts going out
+    amm_fee = float_sum(6089866696204910592ULL /* 1.000 */, float_negate(amm_fee));
+
+    // if for some reason this is an insane value (should never happen) set it to parity
+    // this is because it's better to allow the AMM to continue with no fee in an error state
+    // than to brick it and prevent withdrawal or use
+    if (amm_fee < 0 || 
+            float_compare(amm_fee, 6089866696204910592ULL, COMPARE_GREATER) == 1 ||
+            float_compare(amm_fee, 0, COMPARE_LESS) == 1)
+        amm_fee = 1;
+
+    // grab proposed fee if any (for fee voting or for setup)... use a default if not specified.
+    uint64_t otxn_fee_preference = 6035823500676464640ULL /* 0.001 - default (0.1%), min=0 (0%), max=0.05 (5%) */;
+    int64_t otxn_has_fee = otxn_param(SVAR(otxn_fee_preference), "FEE", 3) > 0;
+
+    if (float_compare(otxn_fee_preference, MAX_AMM_FEE /* 5% */, COMPARE_GREATER) == 1 ||
+        float_compare(otxn_fee_preference, 0, COMPARE_LESS) == 1)
+        NOPE("AMM: Invalid proposed FEE, must be between 0 and 0.05 (5%) as XFL LE");
+
+    uint8_t isu[20];
+    uint8_t cur[20];
 
     // first ensure they have not transferred any URITokens with the remit
     // because this is an attack vector, can use up all the directory space in the AMM
@@ -244,8 +209,9 @@ int64_t hook(uint32_t r)
     if (sent_currency_count > 2)
         NOPE("AMM: Send either 0, 1 or 2 currencies to use AMM.");
    
-    // grab the user's liquidity tokens, if they have any
-    state(SVAR(owner_lp), OTXNACC, 20);
+    // grab the user's liquidity tokens, and fee setting, if these are set
+    // this sets owner_lp and owner_fee_setting
+    state(SVAR(owner_data), OTXNACC, 20);
 
     // First operation we'll deal with is a withdrawal. This happens if they send an empty remit.
     // All of their LP tokens are converted to currency and remitted back to them.
@@ -263,8 +229,15 @@ int64_t hook(uint32_t r)
         if (float_compare(owner_lp, total_lp, COMPARE_GREATER))
             owner_lp = total_lp;
 
-        int64_t ownership_percent = float_divide(owner_lp, total_lp);
+        // update fee accumulator to take into account the withdrawal
+        amm_fee_accumulator = float_sum(amm_fee_accumulator, float_negate(owner_fac_contribution));
 
+        // if somehow through rounding the accumulator ends up under 0 set it to 0
+        if (float_compare(amm_fee_accumulator, 0, COMPARE_LESS) == 1)
+            amm_fee_accumulator = 0;
+
+        int64_t ownership_percent = float_divide(owner_lp, total_lp);
+        
         if (ownership_percent < 0)
             NOPE("AMM: Error computing ownership %");
         
@@ -284,8 +257,11 @@ int64_t hook(uint32_t r)
             send_all_B = 1;
         }
 
-        total_lp -= owner_lp;
-        if (total_lp <= 0)
+        total_lp = float_sum(total_lp, float_negate(owner_lp));
+        if (total_lp < 0)
+            NOPE("AMM: Error computing total_lp");
+
+        if (float_compare(total_lp, 0, COMPARE_LESS | COMPARE_EQUAL) == 1)
         {
             // this is the final withdrawal, so remove setup information
 
@@ -295,6 +271,7 @@ int64_t hook(uint32_t r)
             state_set(0,0, "B", 1);
             state_set(0,0, "CUR", 3);
             state_set(0,0, "G", 1);
+            state_set(0,0, "FAC", 3);
         }
         else
         { 
@@ -318,6 +295,9 @@ int64_t hook(uint32_t r)
             
             // update total lp
             state_set(SVAR(total_lp), "TOT", 3);
+
+            // update fee accumulator
+            state_set(SVAR(amm_fee_accumulator, "FAC", 3));
         }
 
         // write amounts into remit
@@ -387,15 +367,29 @@ int64_t hook(uint32_t r)
         TRACEXFL(G);
         TRACEXFL(sent_amt_A);
         TRACEXFL(sent_amt_B);
-        state_set(SBUF(ammcur), "CUR", 3);
-        state_set(SVAR(sent_amt_A), "A", 1);
-        state_set(SVAR(sent_amt_B), "B", 1);
-        state_set(SVAR(G), "G", 1);
-    
+        
         // set their liquidity tokens as a state entry
-        owner_lp = 100;
-        state_set(SVAR(owner_lp), OTXNACC, 20);
-        state_set(SVAR(owner_lp), "TOT", 3);
+        owner_lp = 6125895493223874560ULL /* 100 arbitrary liquidity units */;
+
+        // set their fee preference
+        owner_fee_preference = otxn_fee_preference;
+        
+        // compute the fee accumulator
+        amm_fee_accumulator = float_multiply(owner_lp, owner_fee_preference);
+        if (amm_fee_accumulator < 0)
+            NOPE("AMM: Error computing initial fee accumulator");
+        
+        if (state_set(SBUF(ammcur), "CUR", 3) != 80 ||
+            state_set(SVAR(sent_amt_A), "A", 1) != 8 ||
+            state_set(SVAR(sent_amt_B), "B", 1) != 8 ||
+            state_set(SVAR(G), "G", 1) != 8 ||
+            state_set(SVAR(amm_fee_accumulator), "FAC", 3) != 8 ||
+            // remembering that owner_data is an array containing owner_lp and owner_fee_preference
+            state_set(SVAR(owner_data), OTXNACC, 20) != 16 ||
+            // the current total LP count is just the first member's token count
+            state_set(SVAR(owner_lp), "TOT", 3) != 8)
+            NOPE("AMM: Error setting initial state (reserves?)");
+
         DONE("AMM: Created.");
     }
 
@@ -448,6 +442,9 @@ int64_t hook(uint32_t r)
     {
         // first scenario: they sent both currencies, this is a deposit
 
+        // remove their previous contribution to the AMM fee accumulator
+        amm_fee_accumulator = float_sum(amm_fee_accumulator, float_negate(owner_fac_contribution));
+
         int64_t new_amt_A = float_sum(amm_amt_A, sent_amt_A);
         int64_t new_amt_B = float_sum(amm_amt_B, sent_amt_B);
 
@@ -477,25 +474,37 @@ int64_t hook(uint32_t r)
 
         int64_t new_lp = float_multiply(ownership, total_lp);
 
-        if (total_lp + new_lp < total_lp ||
-            owner_lp + new_lp < owner_lp)
+        if (float_compare(float_sum(total_lp, new_lp), total_lp, COMPARE_LESS) != 0 ||
+            float_compare(float_sum(owner_lp, new_lp), owner_lp, COMPARE_LESS) != 0)
             NOPE("AMM: Overflow error.");
 
-        total_lp += new_lp;
-        owner_lp += new_lp;
+        total_lp = float_sum(total_lp, new_lp);
+        owner_lp = float_sum(owner_lp, new_lp);
 
         amm_amt_A = float_sum(amm_amt_A, sent_amt_A);
         amm_amt_B = float_sum(amm_amt_B, sent_amt_B);
 
-        if (amm_amt_A <= 0 || amm_amt_B <= 0)
+        if (amm_amt_A <= 0 || amm_amt_B <= 0 || total_lp <= 0 || owner_lp <= 0)
             NOPE("AMM: Error crediting new balances to internal AMM state.");
         
+        // set their fee preference
+        owner_fee_preference = otxn_fee_preference;
+        
+        // compute the fee accumulator
+        owner_fac_contribution = float_multiply(owner_lp, owner_fee_preference);
+
+        amm_fee_accumulator = float_sum(amm_fee_accumulator, owner_fac_contribution);
+
+        if (amm_fee_accumulator < 0)
+            NOPE("AMM: Error computing initial fee accumulator");
+        
         // ok credit their liquidity tokens
-        if (state_set(SVAR(owner_lp), OTXNACC, 20) != 8 ||
+        if (state_set(SVAR(owner_data), OTXNACC, 20) != 16 ||
             state_set(SVAR(total_lp), "TOT", 3) != 8 ||
             state_set(SVAR(amm_amt_A), "A", 1) != 8 ||
             state_set(SVAR(amm_amt_B), "B", 1) != 8 ||
-            state_set(SVAR(new_G), "G", 1) != 8)
+            state_set(SVAR(new_G), "G", 1) != 8 ||
+            state_set(SVAR(amm_fee_accumulator), "FAC", 3) != 8)
             NOPE("AMM: Error crediting liquidity (reserves?)");
 
         DONE("AMM: Liquidity added.");
@@ -512,6 +521,9 @@ int64_t hook(uint32_t r)
         int64_t calc_amt_B = float_divide(G, new_amt_A);
 
         int64_t diff_B = float_sum(amm_amt_B, float_negate(calc_amt_B));
+
+        // apply fee
+        diff_B = float_multiply(amm_fee, diff_B);
 
         if (diff_B <= 0 || !float_compare(diff_B, 0, COMPARE_GREATER))
             NOPE("AMM: Error computing currency B.");
@@ -539,6 +551,9 @@ int64_t hook(uint32_t r)
         int64_t calc_amt_A = float_divide(G, new_amt_B);
 
         int64_t diff_A = float_sum(amm_amt_A, float_negate(calc_amt_A));
+        
+        // apply fee
+        diff_A = float_multiply(amm_fee, diff_A);
 
         TRACEXFL(new_amt_B);
         TRACEXFL(calc_amt_A);
