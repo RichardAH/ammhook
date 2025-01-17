@@ -141,8 +141,8 @@ int64_t hook(uint32_t r)
   
     // owner data is packed int64_t LE sent and retrieved in memory format from hook state
     int64_t owner_data[2] = { 0, 0 }; 
-    #define owner_lp owner_data[0];
-    #define owner_fee_setting owner_data[1];
+    #define owner_lp owner_data[0]
+    #define owner_fee_setting owner_data[1]
 
     int64_t amm_fee_accumulator = 0;
 
@@ -297,7 +297,7 @@ int64_t hook(uint32_t r)
             state_set(SVAR(total_lp), "TOT", 3);
 
             // update fee accumulator
-            state_set(SVAR(amm_fee_accumulator, "FAC", 3));
+            state_set(SVAR(amm_fee_accumulator), "FAC", 3);
         }
 
         // write amounts into remit
@@ -372,10 +372,10 @@ int64_t hook(uint32_t r)
         owner_lp = 6125895493223874560ULL /* 100 arbitrary liquidity units */;
 
         // set their fee preference
-        owner_fee_preference = otxn_fee_preference;
+        owner_fee_setting = otxn_fee_preference;
         
         // compute the fee accumulator
-        amm_fee_accumulator = float_multiply(owner_lp, owner_fee_preference);
+        amm_fee_accumulator = float_multiply(owner_lp, owner_fee_setting);
         if (amm_fee_accumulator < 0)
             NOPE("AMM: Error computing initial fee accumulator");
         
@@ -384,7 +384,7 @@ int64_t hook(uint32_t r)
             state_set(SVAR(sent_amt_B), "B", 1) != 8 ||
             state_set(SVAR(G), "G", 1) != 8 ||
             state_set(SVAR(amm_fee_accumulator), "FAC", 3) != 8 ||
-            // remembering that owner_data is an array containing owner_lp and owner_fee_preference
+            // remembering that owner_data is an array containing owner_lp and owner_fee_setting
             state_set(SVAR(owner_data), OTXNACC, 20) != 16 ||
             // the current total LP count is just the first member's token count
             state_set(SVAR(owner_lp), "TOT", 3) != 8)
@@ -488,10 +488,10 @@ int64_t hook(uint32_t r)
             NOPE("AMM: Error crediting new balances to internal AMM state.");
         
         // set their fee preference
-        owner_fee_preference = otxn_fee_preference;
+        owner_fee_setting = otxn_fee_preference;
         
         // compute the fee accumulator
-        owner_fac_contribution = float_multiply(owner_lp, owner_fee_preference);
+        owner_fac_contribution = float_multiply(owner_lp, owner_fee_setting);
 
         amm_fee_accumulator = float_sum(amm_fee_accumulator, owner_fac_contribution);
 
