@@ -61,7 +61,7 @@ uint8_t txn_remit[60000] =
 };
 
 #define TXN_CUR_A (txn_remit + 233)
-#define TXN_CUR_B (txn_remit + 284)
+#define TXN_CUR_B (txn_remit + 285)
 #define OTXNACC (txn_remit + 93)
 #define HOOKACC (txn_remit + 71)
 #define TXN_EDET (txn_remit + 113)
@@ -79,6 +79,8 @@ uint8_t txn_remit[60000] =
     *b++ = (drops_tmp >>  8) & 0xFFU;\
     *b++ = (drops_tmp >>  0) & 0xFFU;\
 }
+
+#define DEBUG 1 
 
 #define DO_REMIT(early)\
 {\
