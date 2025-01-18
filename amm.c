@@ -263,6 +263,9 @@ int64_t hook(uint32_t r)
         if (total_lp < 0)
             NOPE("AMM: Error computing total_lp");
 
+        // delete owner's entry
+        state_set(0,0, OTXNACC, 20);
+       
         if (float_compare(total_lp, 0, COMPARE_LESS | COMPARE_EQUAL) == 1)
         {
             // this is the final withdrawal, so remove setup information
@@ -288,9 +291,6 @@ int64_t hook(uint32_t r)
 
             state_set(SVAR(new_G), "G", 1);
             
-            // delete owner's entry
-            state_set(0,0, OTXNACC, 20);
-       
             // update balances
             state_set(SVAR(amm_amt_A), "A", 1);
             state_set(SVAR(amm_amt_B), "B", 1);
