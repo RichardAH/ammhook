@@ -388,7 +388,7 @@ int64_t hook(uint32_t r)
             float_sto(TXN_CUR_B + 1, 8, 0,0,0,0, out_amt_B, 0);
         else
         {
-            ENSURE_TRUSTLINE_EXISTS(ammcur + 60, ammcur + 40);
+            ENSURE_TRUSTLINE_EXISTS(ammcur + 40, ammcur + 60);
             float_sto(TXN_CUR_B, 49, ammcur + 40, 20, ammcur + 60, 20, out_amt_B, sfAmount);
         }
 
@@ -635,7 +635,7 @@ int64_t hook(uint32_t r)
             float_sto(TXN_CUR_A + 1, 8, 0, 0, 0, 0, diff_B, 0); // XAH
         else
         {
-            ENSURE_TRUSTLINE_EXISTS(ammcur + 60, ammcur + 40);
+            ENSURE_TRUSTLINE_EXISTS(ammcur + 40, ammcur + 60);
             float_sto(TXN_CUR_A, 49, ammcur +  40, 20, ammcur + 60, 20, diff_B, sfAmount);
         }
     }
