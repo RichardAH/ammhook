@@ -36,9 +36,12 @@
 #define ENSURE_TRUSTLINE_EXISTS(cur, iss)\
 {\
             uint8_t kl[34];\
-            util_keylet(SBUF(kl), KEYLET_LINE, (iss), 20, OTXNACC, 20, (cur), 20);\
-            if (slot_set(SBUF(kl), 50) != 50)\
-                NOPE("AMM: Destination account does not have the required trustline setup.");\
+            if (!BUFFER_EQUAL_20(iss, OTXNACC))\
+            {\
+                util_keylet(SBUF(kl), KEYLET_LINE, (iss), 20, OTXNACC, 20, (cur), 20);\
+                if (slot_set(SBUF(kl), 50) != 50)\
+                    NOPE("AMM: Destination account does not have the required trustline setup.");\
+            }\
 }
 
 #define SVAR(x) &x, sizeof(x)
@@ -388,7 +391,7 @@ int64_t hook(uint32_t r)
             float_sto(TXN_CUR_B + 1, 8, 0,0,0,0, out_amt_B, 0);
         else
         {
-            ENSURE_TRUSTLINE_EXISTS(ammcur + 60, ammcur + 40);
+            ENSURE_TRUSTLINE_EXISTS(ammcur + 40, ammcur + 60);
             float_sto(TXN_CUR_B, 49, ammcur + 40, 20, ammcur + 60, 20, out_amt_B, sfAmount);
         }
 
@@ -642,7 +645,7 @@ int64_t hook(uint32_t r)
             float_sto(TXN_CUR_A + 1, 8, 0, 0, 0, 0, diff_B, 0); // XAH
         else
         {
-            ENSURE_TRUSTLINE_EXISTS(ammcur + 60, ammcur + 40);
+            ENSURE_TRUSTLINE_EXISTS(ammcur + 40, ammcur + 60);
             float_sto(TXN_CUR_A, 49, ammcur +  40, 20, ammcur + 60, 20, diff_B, sfAmount);
         }
     }
