@@ -36,9 +36,12 @@
 #define ENSURE_TRUSTLINE_EXISTS(cur, iss)\
 {\
             uint8_t kl[34];\
-            util_keylet(SBUF(kl), KEYLET_LINE, (iss), 20, OTXNACC, 20, (cur), 20);\
-            if (slot_set(SBUF(kl), 50) != 50)\
-                NOPE("AMM: Destination account does not have the required trustline setup.");\
+            if (!BUFFER_EQUAL_20(iss, OTXNACC))\
+            {\
+                util_keylet(SBUF(kl), KEYLET_LINE, (iss), 20, OTXNACC, 20, (cur), 20);\
+                if (slot_set(SBUF(kl), 50) != 50)\
+                    NOPE("AMM: Destination account does not have the required trustline setup.");\
+            }\
 }
 
 #define SVAR(x) &x, sizeof(x)
