@@ -540,14 +540,13 @@ int64_t hook(uint32_t r)
         int64_t sent_ratio = float_divide(sent_amt_A, sent_amt_B);
 
         int64_t diverge = float_divide(amm_ratio, sent_ratio);
-        if (float_compare(diverge, 0, COMPARE_LESS))
-            diverge = float_negate(diverge);
+        
+        // allowable values 0.99 - 1.01
+        if (float_compare(diverge, 6080752297695428608ULL /* 0.99 ( 99%) */, COMPARE_LESS) == 1 ||
+            float_compare(diverge, 6089876696204910592ULL /* 1.01 (101%) */, COMPARE_GREATER) == 1)
+            NOPE("AMM: Divergence too great. Send amounts at the correct ratio.");
 
         int64_t new_G = float_multiply(new_amt_A, new_amt_B);
-
-        if (float_compare(diverge, 6053837899185946624ULL /* 1% */, COMPARE_GREATER))
-            NOPE("AMM: Divergence too great. Send amounts at the correct ratio.");
-        
 
         // work out how many LP tokens they get
         // we'll work out their percentage ownership of A and B and average these
