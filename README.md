@@ -18,7 +18,7 @@ Optionally include a FEE HookParameter on this remit to set your desired AMM fee
 To deposit liquidity into the AMM Remit the two currencies the AMM contains in the correct ratio. To discover these check the state keys A and B, the data for which is XFL LE. Specifying an XFL LE between 0 and 0.05 as a HookParameter in this remit changes the LP holder's fee vote.
 
 ## Withdraw
-To withdraw send an empty remit. 100% of the LP's share of the two currencies will be remitted back to them.
+To withdraw send an empty remit. 100% of the LP's share of the two currencies will be remitted back to them. To withdraw less than 100% of the user's LP tokens, submit with HookParameter "WDR" containing the number of LP tokens to liquidate.
 
 ## Trade
 To trade against the AMM remit one of the two currencies to receive an emitted remit of the other.
