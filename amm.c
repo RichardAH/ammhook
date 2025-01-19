@@ -600,6 +600,10 @@ int64_t hook(uint32_t r)
 
     // execution to here means they are not adding liquidity, but rather using the pool
 
+    if (float_compare(amm_amt_A, 0, COMPARE_EQUAL | COMPARE_LESS) == 1 ||
+        float_compare(amm_amt_B, 0, COMPARE_EQUAL | COMPARE_LESS) == 1)
+        NOPE("AMM: Invariant failure - A or B <= 0.");
+
     if (has_sent_A)
     {
         // sent only A, so return only B
@@ -627,8 +631,12 @@ int64_t hook(uint32_t r)
         TRACEXFL(amm_amt_A);
         TRACEXFL(amm_amt_B);
 
-        state_set(SVAR(amm_amt_B), "B", 1);
+        // invariant
+        if (float_compare(float_multiply(new_amt_A, amm_amt_B), G, COMPARE_GREATER | COMPARE_EQUAL) != 1)
+            NOPE("AMM: Invariant failure A*B<G.");
 
+        state_set(SVAR(new_amt_A), "A", 1);
+        state_set(SVAR(amm_amt_B), "B", 1);
 
         // write amount into remit (it's written to spot A in the out array, but it's currency B)
         if (B_is_xah)
@@ -666,8 +674,13 @@ int64_t hook(uint32_t r)
 
         TRACEXFL(amm_amt_A);
         TRACEXFL(amm_amt_B);
+        
+        // invariant
+        if (float_compare(float_multiply(amm_amt_A, new_amt_B), G, COMPARE_GREATER | COMPARE_EQUAL) != 1)
+            NOPE("AMM: Invariant failure A*B<G.");
 
         state_set(SVAR(amm_amt_A), "A", 1);
+        state_set(SVAR(new_amt_B), "B", 1);
 
         // write amount into remit depending on if it's XAH or not
         if (A_is_xah)
