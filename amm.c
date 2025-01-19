@@ -141,16 +141,27 @@ int64_t hook(uint32_t r)
     // grab the amounts, constant and current outstanding liquidity points
     int64_t amm_amt_A, amm_amt_B, G, total_lp;
   
+    // grab proposed fee if any (for fee voting or for setup)... use a default if not specified.
+    uint64_t otxn_fee_preference = 6035823500676464640ULL /* 0.001 - default (0.1%), min=0 (0%), max=0.05 (5%) */;
+    int64_t otxn_has_fee = otxn_param(SVAR(otxn_fee_preference), "FEE", 3) > 0;
+
+    if (float_compare(otxn_fee_preference, MAX_AMM_FEE /* 5% */, COMPARE_GREATER) == 1 ||
+        float_compare(otxn_fee_preference, 0, COMPARE_LESS) == 1)
+        NOPE("AMM: Invalid proposed FEE, must be between 0 and 0.05 (5%) as XFL LE");
+
     // owner data is packed int64_t LE sent and retrieved in memory format from hook state
     int64_t owner_data[2] = { 0, 0 }; 
     #define owner_lp owner_data[0]
     #define owner_fee_setting owner_data[1]
+    
+    // grab the user's liquidity tokens, and fee setting, if these are set
+    // this sets owner_lp and owner_fee_setting
+    state(SVAR(owner_data), OTXNACC, 20);
 
     int64_t amm_fee_accumulator = 0;
 
-    // compute current fee accumulator contribution
+    // compute current fee accumulator contribution, which will be 0 if unset
     int64_t owner_fac_contribution = float_multiply(owner_lp, owner_fee_setting);
-
   
     if (already_setup)
     {
@@ -182,13 +193,6 @@ int64_t hook(uint32_t r)
             float_compare(amm_fee, 0, COMPARE_LESS) == 1)
         amm_fee = 1;
 
-    // grab proposed fee if any (for fee voting or for setup)... use a default if not specified.
-    uint64_t otxn_fee_preference = 6035823500676464640ULL /* 0.001 - default (0.1%), min=0 (0%), max=0.05 (5%) */;
-    int64_t otxn_has_fee = otxn_param(SVAR(otxn_fee_preference), "FEE", 3) > 0;
-
-    if (float_compare(otxn_fee_preference, MAX_AMM_FEE /* 5% */, COMPARE_GREATER) == 1 ||
-        float_compare(otxn_fee_preference, 0, COMPARE_LESS) == 1)
-        NOPE("AMM: Invalid proposed FEE, must be between 0 and 0.05 (5%) as XFL LE");
 
     uint8_t isu[20];
     uint8_t cur[20];
@@ -211,10 +215,6 @@ int64_t hook(uint32_t r)
     if (sent_currency_count > 2)
         NOPE("AMM: Send either 0, 1 or 2 currencies to use AMM.");
    
-    // grab the user's liquidity tokens, and fee setting, if these are set
-    // this sets owner_lp and owner_fee_setting
-    state(SVAR(owner_data), OTXNACC, 20);
-
     // First operation we'll deal with is a withdrawal. This happens if they send an empty remit.
     // All of their LP tokens are converted to currency and remitted back to them.
     if (sent_currency_count == 0)
@@ -230,24 +230,76 @@ int64_t hook(uint32_t r)
         // if they are more than total somehow, just assume they own all of them
         if (float_compare(owner_lp, total_lp, COMPARE_GREATER))
             owner_lp = total_lp;
+        
+        // check if this is a partial withdrawal, meaning they send a parameter of type "WDR"
+        // which is an XFL LE containing the number of LP tokens they are withdrawing.
+
+        uint64_t withdraw_lp = owner_lp;
+        uint64_t new_owner_lp = 0;
+
+        otxn_param(SVAR(withdraw_lp), "WDR", 3);
+
+        int64_t withdrawal_percent = 6089866696204910592ULL /* 1.00 */;
+        int64_t remain_percent = 0;
+        if (float_compare(withdraw_lp, owner_lp, COMPARE_GREATER | COMPARE_EQUAL) == 1)
+            withdraw_lp = owner_lp;
+        else
+        {
+            withdrawal_percent = float_divide(withdraw_lp, owner_lp);
+            remain_percent = float_sum(6089866696204910592ULL /* 1.00 */, float_negate(withdrawal_percent));
+            new_owner_lp = float_sum(owner_lp, float_negate(withdraw_lp));
+            if (float_compare(new_owner_lp, 0, COMPARE_LESS) == 1)
+                new_owner_lp = 0;
+        }
+
+        if (withdrawal_percent <= 0 || remain_percent < 0)
+            NOPE("AMM: Error computing withdraw/remain %");
+
+        // enforce minimum withdrawal percent of 1% to help avoid spam
+        if (float_compare(withdrawal_percent, 6053837899185946624ULL /* 0.01  (1%) */, COMPARE_LESS) == 1)
+            NOPE("AMM: Minimum withdrawal amount is 1% of holdings.");
+
+        // enforce maximum partial withdrawal percent of 99% to help avoid dust
+        if (float_compare(withdrawal_percent, 6080752297695428608ULL /* 0.99 (99%) */, COMPARE_GREATER) == 1 &&
+            remain_percent != 0)
+            NOPE("AMM: To withdraw all omit the WDR param on the REMIT txn.");
 
         // update fee accumulator to take into account the withdrawal
-        amm_fee_accumulator = float_sum(amm_fee_accumulator, float_negate(owner_fac_contribution));
+        amm_fee_accumulator = float_sum(amm_fee_accumulator,
+                float_negate(owner_fac_contribution));
+
+        // if it's a partial withdrawal then replenish their FAC contribution based on remaining tokens
+        // and optionally also modified FEE vote during this transaction
+        if (remain_percent != 0)
+        {
+            if (otxn_has_fee)
+                owner_fee_setting = otxn_fee_preference;
+
+            owner_fac_contribution = float_multiply(new_owner_lp, owner_fee_setting);
+            amm_fee_accumulator = float_sum(amm_fee_accumulator, owner_fac_contribution);
+        }
 
         // if somehow through rounding the accumulator ends up under 0 set it to 0
         if (float_compare(amm_fee_accumulator, 0, COMPARE_LESS) == 1)
             amm_fee_accumulator = 0;
 
+        // pre-withdrawal ownership percentage
         int64_t ownership_percent = float_divide(owner_lp, total_lp);
         
         if (ownership_percent < 0)
             NOPE("AMM: Error computing ownership %");
         
-        int64_t out_amt_A = float_multiply(amm_amt_A, ownership_percent);
-        int64_t out_amt_B = float_multiply(amm_amt_B, ownership_percent);
+        int64_t out_amt_A = 
+            float_multiply(
+                float_multiply(amm_amt_A, ownership_percent),
+                withdrawal_percent /* will be 1.00 for complete withdrawal */);
+        int64_t out_amt_B =
+            float_multiply(
+                float_multiply(amm_amt_B, ownership_percent),
+                withdrawal_percent);
 
         // clamp the amounts we're sending out
-        int64_t send_all_A, send_all_B;
+        int64_t send_all_A = 0, send_all_B = 0;
         if (!float_compare(out_amt_A, amm_amt_A, COMPARE_LESS))
         {
             out_amt_A = amm_amt_A;
@@ -259,13 +311,19 @@ int64_t hook(uint32_t r)
             send_all_B = 1;
         }
 
-        total_lp = float_sum(total_lp, float_negate(owner_lp));
+        total_lp = float_sum(total_lp, float_negate(withdraw_lp));
         if (total_lp < 0)
             NOPE("AMM: Error computing total_lp");
 
+
+        // compute the new values
+        amm_amt_A = send_all_A ? 0 : float_sum(amm_amt_A, float_negate(out_amt_A));
+        amm_amt_B = send_all_B ? 0 : float_sum(amm_amt_B, float_negate(out_amt_B));
+
         // delete owner's entry
-        state_set(0,0, OTXNACC, 20);
-       
+        if (remain_percent == 0)
+            state_set(0,0, OTXNACC, 20);
+            
         if (float_compare(total_lp, 0, COMPARE_LESS | COMPARE_EQUAL) == 1)
         {
             // this is the final withdrawal, so remove setup information
@@ -280,26 +338,22 @@ int64_t hook(uint32_t r)
         }
         else
         { 
-            // compute the new values
-            amm_amt_A = send_all_A ? amm_amt_A : float_sum(amm_amt_A, float_negate(out_amt_A));
-            amm_amt_B = send_all_B ? amm_amt_B : float_sum(amm_amt_B, float_negate(out_amt_B));
-
             // compute new G
             int64_t new_G = float_multiply(amm_amt_A, amm_amt_B);
             if (new_G <= 0)
                 NOPE("AMM: Internal error when calculating new G.");
+        
+            owner_lp = new_owner_lp;
 
-            state_set(SVAR(new_G), "G", 1);
-            
-            // update balances
-            state_set(SVAR(amm_amt_A), "A", 1);
-            state_set(SVAR(amm_amt_B), "B", 1);
-            
-            // update total lp
-            state_set(SVAR(total_lp), "TOT", 3);
+            if (remain_percent != 0 && state_set(SVAR(owner_data), OTXNACC, 20) != 16)
+                NOPE("AMM: Error updating user during withdrawal (reserves?)");
 
-            // update fee accumulator
-            state_set(SVAR(amm_fee_accumulator), "FAC", 3);
+            if (state_set(SVAR(total_lp), "TOT", 3) != 8 ||
+                state_set(SVAR(amm_amt_A), "A", 1) != 8 ||
+                state_set(SVAR(amm_amt_B), "B", 1) != 8 ||
+                state_set(SVAR(new_G), "G", 1) != 8 ||
+                state_set(SVAR(amm_fee_accumulator), "FAC", 3) != 8)
+                NOPE("AMM: Error updating parameters during withdrawal (reserves?)");
         }
 
         // write amounts into remit
@@ -307,6 +361,7 @@ int64_t hook(uint32_t r)
         float_sto(TXN_CUR_B, 49, ammcur + 40, 20, ammcur + 60, 20, out_amt_B, sfAmount);
 
         DO_REMIT(0);
+
         DONE("AMM: Emitted withdraw.");
         return 0;
     }
@@ -446,7 +501,6 @@ int64_t hook(uint32_t r)
 
         // remove their previous contribution to the AMM fee accumulator
         amm_fee_accumulator = float_sum(amm_fee_accumulator, float_negate(owner_fac_contribution));
-
         int64_t new_amt_A = float_sum(amm_amt_A, sent_amt_A);
         int64_t new_amt_B = float_sum(amm_amt_B, sent_amt_B);
 
