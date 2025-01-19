@@ -27,6 +27,20 @@
     *x++ = *y++;\
 }
 
+#define ISZERO20(src)\
+(\
+    *(((uint64_t*)(src)) + 0) == 0 &&\
+    *(((uint64_t*)(src)) + 1) == 0 &&\
+    *(((uint32_t*)(src)) + 4) == 0)
+
+#define ENSURE_TRUSTLINE_EXISTS(cur, iss)\
+{\
+            uint8_t kl[34];\
+            util_keylet(SBUF(kl), KEYLET_LINE, (iss), 20, OTXNACC, 20, (cur), 20);\
+            if (slot_set(SBUF(kl), 50) != 50)\
+                NOPE("AMM: Destination account does not have the required trustline setup.");\
+}
+
 #define SVAR(x) &x, sizeof(x)
 
 uint8_t txn_remit[60000] =
@@ -48,14 +62,16 @@ uint8_t txn_remit[60000] =
 /*   2, 229 */  0xF0U, 0x5CU,                                                               /* lead-in amount array */
 /*   2, 231 */  0xE0U, 0x5BU,                                                               /*lead-in amount entry A*/
 /*  49, 233 */  0x61U,
-                0,0,0,0,0,0,0,0,
-                0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,                                            /* amount A */
-                0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+                0x99,0x99,0x99,0x99,0x99,0x99,0x99,0x99,
+                0x99,0x99,0x99,0x99,0x99,0x99,0x99,0x99,0x99,0x99,0x99,0x99,0x99,0x99,0x99,0x99,0x99,0x99,0x99,0x99,
+                /* amount A */
+                0x99,0x99,0x99,0x99,0x99,0x99,0x99,0x99,0x99,0x99,0x99,0x99,0x99,0x99,0x99,0x99,0x99,0x99,0x99,0x99,
 /*   3, 282 */  0xE1, 0xE0U, 0x5BU,                                                         /*lead-in amount entry B*/
 /*  49, 285 */  0x61U,
-                0,0,0,0,0,0,0,0,
-                0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,                                            /* amount B */
-                0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+                0x99,0x99,0x99,0x99,0x99,0x99,0x99,0x99,0x99,0x99,0x99,0x99,0x99,0x99,
+                0x99,0x99,0x99,0x99,0x99,0x99,0x99,0x99,0x99,0x99,0x99,0x99,0x99,0x99,      /* amount B */
+                0x99,0x99,0x99,0x99,0x99,0x99,0x99,0x99,0x99,0x99,0x99,0x99,0x99,0x99,
+                0x99,0x99,0x99,0x99,0x99,0x99,
 /*   2, 334 */  0xE1, 0xF1                                                 /* lead out, may also appear at end of A */
 /*   -, 336 */                
 };
@@ -137,6 +153,9 @@ int64_t hook(uint32_t r)
     #define amm_cur_B (ammcur + 40)
     uint8_t ammcur[80];
     int64_t already_setup = (state(SBUF(ammcur), "CUR", 3) == 80);
+
+    int64_t A_is_xah = ISZERO20(amm_cur_A);
+    int64_t B_is_xah = ISZERO20(amm_cur_B);
 
     // grab the amounts, constant and current outstanding liquidity points
     int64_t amm_amt_A, amm_amt_B, G, total_lp;
@@ -357,8 +376,21 @@ int64_t hook(uint32_t r)
         }
 
         // write amounts into remit
-        float_sto(TXN_CUR_A, 49, ammcur +  0, 20, ammcur + 20, 20, out_amt_A, sfAmount);
-        float_sto(TXN_CUR_B, 49, ammcur + 40, 20, ammcur + 60, 20, out_amt_B, sfAmount);
+        if (A_is_xah)
+            float_sto(TXN_CUR_A + 1, 8, 0,0,0,0, out_amt_A, 0);
+        else
+        {
+            ENSURE_TRUSTLINE_EXISTS(ammcur + 0, ammcur + 20);
+            float_sto(TXN_CUR_A, 49, ammcur +  0, 20, ammcur + 20, 20, out_amt_A, sfAmount);
+        }
+
+        if (B_is_xah)
+            float_sto(TXN_CUR_B + 1, 8, 0,0,0,0, out_amt_B, 0);
+        else
+        {
+            ENSURE_TRUSTLINE_EXISTS(ammcur + 60, ammcur + 40);
+            float_sto(TXN_CUR_B, 49, ammcur + 40, 20, ammcur + 60, 20, out_amt_B, sfAmount);
+        }
 
         DO_REMIT(0);
 
@@ -597,8 +629,15 @@ int64_t hook(uint32_t r)
 
         state_set(SVAR(amm_amt_B), "B", 1);
 
+
         // write amount into remit (it's written to spot A in the out array, but it's currency B)
-        float_sto(TXN_CUR_A, 49, ammcur +  40, 20, ammcur + 60, 20, diff_B, sfAmount);
+        if (B_is_xah)
+            float_sto(TXN_CUR_A + 1, 8, 0, 0, 0, 0, diff_B, 0); // XAH
+        else
+        {
+            ENSURE_TRUSTLINE_EXISTS(ammcur + 60, ammcur + 40);
+            float_sto(TXN_CUR_A, 49, ammcur +  40, 20, ammcur + 60, 20, diff_B, sfAmount);
+        }
     }
     else
     {
@@ -630,8 +669,14 @@ int64_t hook(uint32_t r)
 
         state_set(SVAR(amm_amt_A), "A", 1);
 
-        // write amount into remit
-        float_sto(TXN_CUR_A, 49, ammcur +  0, 20, ammcur + 20, 20, diff_A, sfAmount);
+        // write amount into remit depending on if it's XAH or not
+        if (A_is_xah)
+            float_sto(TXN_CUR_A + 1, 8, 0, 0, 0, 0, diff_A, 0);
+        else
+        {
+            ENSURE_TRUSTLINE_EXISTS(ammcur + 0, ammcur + 20);
+            float_sto(TXN_CUR_A, 49, ammcur +  0, 20, ammcur + 20, 20, diff_A, sfAmount);
+        }
     }
 
     DO_REMIT(1);
