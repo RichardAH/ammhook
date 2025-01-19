@@ -16,6 +16,9 @@
     *x++ = *y++;\
 }
 
+#define XAH_TO_DROPS(xah)\
+    float_multiply(xah, float_set(6, 1))
+
 #define COPY40(src,dst)\
 {\
     uint64_t* x = (dst);\
@@ -377,7 +380,7 @@ int64_t hook(uint32_t r)
 
         // write amounts into remit
         if (A_is_xah)
-            float_sto(TXN_CUR_A + 1, 8, 0,0,0,0, out_amt_A, 0);
+            float_sto(TXN_CUR_A + 1, 8, 0,0,0,0, XAH_TO_DROPS(out_amt_A), 0);
         else
         {
             ENSURE_TRUSTLINE_EXISTS(ammcur + 0, ammcur + 20);
@@ -385,7 +388,7 @@ int64_t hook(uint32_t r)
         }
 
         if (B_is_xah)
-            float_sto(TXN_CUR_B + 1, 8, 0,0,0,0, out_amt_B, 0);
+            float_sto(TXN_CUR_B + 1, 8, 0,0,0,0, XAH_TO_DROPS(out_amt_B), 0);
         else
         {
             ENSURE_TRUSTLINE_EXISTS(ammcur + 60, ammcur + 40);
@@ -632,7 +635,7 @@ int64_t hook(uint32_t r)
 
         // write amount into remit (it's written to spot A in the out array, but it's currency B)
         if (B_is_xah)
-            float_sto(TXN_CUR_A + 1, 8, 0, 0, 0, 0, diff_B, 0); // XAH
+            float_sto(TXN_CUR_A + 1, 8, 0, 0, 0, 0, XAH_TO_DROPS(diff_B), 0); // XAH
         else
         {
             ENSURE_TRUSTLINE_EXISTS(ammcur + 60, ammcur + 40);
@@ -671,7 +674,7 @@ int64_t hook(uint32_t r)
 
         // write amount into remit depending on if it's XAH or not
         if (A_is_xah)
-            float_sto(TXN_CUR_A + 1, 8, 0, 0, 0, 0, diff_A, 0);
+            float_sto(TXN_CUR_A + 1, 8, 0, 0, 0, 0, XAH_TO_DROPS(diff_A), 0);
         else
         {
             ENSURE_TRUSTLINE_EXISTS(ammcur + 0, ammcur + 20);
