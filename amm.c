@@ -16,6 +16,9 @@
     *x++ = *y++;\
 }
 
+#define float_sub(a, b)\
+    float_sum(a, float_negate(b))
+
 #define COPY40(src,dst)\
 {\
     uint64_t* x = (dst);\
@@ -540,8 +543,9 @@ int64_t hook(uint32_t r)
         int64_t sent_ratio = float_divide(sent_amt_A, sent_amt_B);
 
         int64_t diverge = float_divide(amm_ratio, sent_ratio);
-        if (float_compare(diverge, 0, COMPARE_LESS))
-            diverge = float_negate(diverge);
+        if (float_compare(diverge, 6089866696204910592ULL /* 1 */, COMPARE_LESS))
+            diverge = float_invert(diverge);
+        diverge = float_sub(diverge, 6089866696204910592ULL /* 1 */);
 
         int64_t new_G = float_multiply(new_amt_A, new_amt_B);
 
