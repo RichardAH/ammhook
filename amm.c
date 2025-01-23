@@ -435,6 +435,16 @@ int64_t hook(uint32_t r)
     if (has_sent_B && BUFFER_EQUAL_40(sent_cur_A+1, sent_cur_B+1))
         NOPE("AMM: Both currencies cannot be the same.");
 
+    // sanity check amount reads
+    if (sent_amt_A < 0 || 
+        (has_sent_B && sent_amt_B < 0))
+            NOPE("AMM: Error reading sent amounts.");
+
+    // remit transactor should prevent this but check anyway
+    if (float_compare(sent_amt_A, 0, COMPARE_LESS | COMPARE_EQUAL) == 1 ||
+        (has_sent_B && float_compare(sent_amt_B, 0, COMPARE_LESS | COMPARE_EQUAL) == 1))
+        NOPE("AMM: Amounts must be positive non-zero.");
+
     // check if the AMM has been setup yet
     if (!already_setup)
     {
@@ -452,9 +462,6 @@ int64_t hook(uint32_t r)
 
         if (!sent_xah_B)
             COPY40(sent_cur_B + 8, ammcur + 40);
-
-        if (sent_amt_A <= 0 || sent_amt_B <= 0)
-            NOPE("AMM: Amounts must be positive non-zero.");
 
         // geometric mean constant
         int64_t G = float_multiply(sent_amt_A, sent_amt_B);
