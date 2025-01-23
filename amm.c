@@ -237,11 +237,12 @@ int64_t hook(uint32_t r)
         : 0;
 
     // valid numbers of currencies are 0, 1 and 2, depending on what's happening, more than 2 is always an error
-    if (sent_currency_count > 2)
-        NOPE("AMM: Send either 0, 1 or 2 currencies to use AMM.");
+    if (sent_currency_count < 0 || sent_currency_count > 2)
+        NOPE("AMM: Send either 0 (withdraw), 1 (trade) or 2 (deposit) currencies to use AMM.");
    
     // First operation we'll deal with is a withdrawal. This happens if they send an empty remit.
-    // All of their LP tokens are converted to currency and remitted back to them.
+    // All of their LP tokens are converted to currency and remitted back to them, unless WDR is specified
+    // containing the number of LP tokens to liquidate, in which case a partial withdrawal is actioned.
     if (sent_currency_count == 0)
     {
         // can't withdraw unless it's already created
@@ -264,6 +265,9 @@ int64_t hook(uint32_t r)
 
         otxn_param(SVAR(withdraw_lp), "WDR", 3);
 
+        if (withdraw_lp <= 0 || float_compare(withdraw_lp, 0, COMPARE_LESS | COMPARE_EQUAL) == 1)
+            NOPE("AMM: Invalid WDR parameter, specify a positive number of LP tokens to liquidate.");
+
         int64_t withdrawal_percent = 6089866696204910592ULL /* 1.00 */;
         int64_t remain_percent = 0;
         if (float_compare(withdraw_lp, owner_lp, COMPARE_GREATER | COMPARE_EQUAL) == 1)
@@ -272,6 +276,20 @@ int64_t hook(uint32_t r)
         {
             withdrawal_percent = float_divide(withdraw_lp, owner_lp);
             remain_percent = float_sum(6089866696204910592ULL /* 1.00 */, float_negate(withdrawal_percent));
+
+            // sanity check for negatives
+            if (float_compare(withdrawal_percent, 0, COMPARE_LESS | COMPARE_EQUAL) == 1 ||
+                float_compare(remain_percent, 0, COMPARE_LESS | COMPARE_EQUAL) == 1)
+                NOPE("AMM: Error computing withdrawal percent.");
+
+            int64_t sum = float_sum(withdrawal_percent, remain_percent);
+
+            // sanity check percentage calculations
+            if (float_compare(withdrawal_percent, 6089866696204910592ULL /* 1 */, COMPARE_GREATER) == 1 ||
+                float_compare(remain_percent, 6089866696204910592ULL /* 1 */, COMPARE_GREATER) == 1 ||
+                float_compare(sum, 6089866696204910592ULL /* 1.00000000000 */, COMPARE_EQUAL) != 1)
+                NOPE("AMM: Error sanity checking withdrawal percent.");
+
             new_owner_lp = float_sum(owner_lp, float_negate(withdraw_lp));
             if (float_compare(new_owner_lp, 0, COMPARE_LESS) == 1)
                 new_owner_lp = 0;
@@ -404,8 +422,9 @@ int64_t hook(uint32_t r)
         return 0;
     }
     
-    if (sent_currency_count != 1 && sent_currency_count != 2)
-        NOPE("AMM: Send exactly 1 or 2 currencies.");
+    // check the execution hasn't dropped through somehow from above
+    if (sent_currency_count == 0)
+        NOPE("AMM: Internal error.");
 
     // execution to here means we're either using the pool or depositing to the pool
 
