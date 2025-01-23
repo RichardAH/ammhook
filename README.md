@@ -48,3 +48,4 @@ To trade against the AMM remit one of the two currencies to receive an emitted r
 - XFL LE means [XLS-017](https://github.com/XRPLF/XRPL-Standards/discussions/39) in little-endian format.
 - XAH (native XRP) amounts are represented with zero-filled issuer and currency fields
 - All numerical values (amounts, fees, etc.) use the XFL format for consistent mathematical operations
+- To retrieve the current fee: divide FAC by the TOT, keeping in mind these are both XFL LE so must be converted to decimal first.
