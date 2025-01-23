@@ -22,3 +22,31 @@ To withdraw send an empty remit. 100% of the LP's share of the two currencies wi
 
 ## Trade
 To trade against the AMM remit one of the two currencies to receive an emitted remit of the other.
+
+# AMM Hook State and Parameters
+
+## Parameters
+| Parameter | Size | Type | Description |
+|-----------|------|------|-------------|
+| FEE | 8 bytes | XFL LE | Optional fee setting 0-5% (0.00 - 0.05). Default 0.1%. Used for fee voting, during deposit, withdrawal and initial setup |
+| WDR | 8 bytes | XFL LE | Optional withdrawal amount in LP tokens. Must be between 1% (0.01) and 99% (0.99) of holdings for partial withdrawals. If omitted then full withdrawal. |
+
+## State Entries
+| Key | Size | Type | Description |
+|-----|------|------|-------------|
+| "CUR" | 80 bytes | Raw bytes | Currency identifiers for pool tokens |
+| | | | Bytes 0-39: Currency A (20 bytes currency code + 20 bytes issuer or zeros for XAH) |
+| | | | Bytes 40-79: Currency B (20 bytes currency code + 20 bytes issuer or zeros for XAH) |
+| "A" | 8 bytes | XFL LE | Current amount of currency A in pool |
+| "B" | 8 bytes | XFL LE | Current amount of currency B in pool |
+| "G" | 8 bytes | XFL LE | Geometric mean constant (A×B) |
+| "TOT" | 8 bytes | XFL LE | Total LP tokens in circulation |
+| "FAC" | 8 bytes | XFL LE | Fee accumulator tracking weighted preferences |
+| `[Account ID]` | 16 bytes | XFL LE × 2 | Per-user state |
+| | | | Bytes 0-7: User's LP token balance |
+| | | | Bytes 8-15: User's fee preference |
+
+## Notes
+- XFL LE means [XLS-017](https://github.com/XRPLF/XRPL-Standards/discussions/39) in little-endian format.
+- XAH (native XRP) amounts are represented with zero-filled issuer and currency fields
+- All numerical values (amounts, fees, etc.) use the XFL format for consistent mathematical operations
