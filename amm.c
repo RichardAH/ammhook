@@ -546,6 +546,11 @@ int64_t hook(uint32_t r)
         int64_t sent_ratio = float_divide(sent_amt_A, sent_amt_B);
 
         int64_t diverge = float_divide(amm_ratio, sent_ratio);
+
+        // sanity check float operations, keeping in mind a negative result from float functions means error
+        // however 0 xfl is 0 decimal
+        if (amm_ratio <= 0 || sent_ratio <=0 || diverge < 0)
+            NOPE("AMM: Error computing amm ratio.");
         
         // allowable values 0.99 - 1.01
         if (float_compare(diverge, 6080752297695428608ULL /* 0.99 ( 99%) */, COMPARE_LESS) == 1 ||
