@@ -27,7 +27,7 @@ To trade against the AMM remit one of the two currencies to receive an emitted r
 | Parameter | Size | Type | Description |
 |-----------|------|------|-------------|
 | FEE | 8 bytes | XFL LE | Optional fee setting 0-5% (0.00 - 0.05). Default 0.1%. Used for fee voting, during deposit, withdrawal and initial setup |
-| WDR | 8 bytes | XFL LE | Optional withdrawal amount in LP tokens. Must be between 1% (0.01) and 99% (0.99) of holdings for partial withdrawals. If omitted then full withdrawal. |
+| WDR | 8 bytes | XFL LE | Optional withdrawal amount in LP tokens. Must be between 1% and 99% of user's existing holdings for partial withdrawals. If omitted then full withdrawal. |
 
 ## State Entries
 | Key | Size | Type | Description |
@@ -46,6 +46,6 @@ To trade against the AMM remit one of the two currencies to receive an emitted r
 
 ## Notes
 - XFL LE means [XLS-017](https://github.com/XRPLF/XRPL-Standards/discussions/39) in little-endian format.
-- XAH (native XRP) amounts are represented with zero-filled issuer and currency fields
+- XAH (native) amounts are represented with zero-filled issuer and currency fields, but still using XFL.
 - All numerical values (amounts, fees, etc.) use the XFL format for consistent mathematical operations
 - To retrieve the current fee: divide FAC by the TOT, keeping in mind these are both XFL LE so must be converted to decimal first.
