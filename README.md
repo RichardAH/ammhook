@@ -23,8 +23,6 @@ To withdraw send an empty remit. 100% of the LP's share of the two currencies wi
 ## Trade
 To trade against the AMM remit one of the two currencies to receive an emitted remit of the other.
 
-# AMM Hook State and Parameters
-
 ## Parameters
 | Parameter | Size | Type | Description |
 |-----------|------|------|-------------|
