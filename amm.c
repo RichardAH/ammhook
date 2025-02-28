@@ -514,7 +514,7 @@ int64_t hook(uint32_t r)
             state_set(SVAR(owner_lp), "TOT", 3) != 8)
             NOPE("AMM: Error setting initial state (reserves?)");
 
-        DONE("AMM: Created.");
+        DONE("AMM: Created (only if this tx has a tesSUCCESS code.)");
     }
 
     // trace(SBUF("sent_cur_A"), sent_cur_A, 40, 1);
