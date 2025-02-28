@@ -424,7 +424,7 @@ int64_t hook(uint32_t r)
     
     // check the execution hasn't dropped through somehow from above
     if (sent_currency_count == 0)
-        NOPE("AMM: Internal error.");
+        NOPE("AMM: Internal error (1).");
 
     // execution to here means we're either using the pool or depositing to the pool
 
@@ -541,7 +541,7 @@ int64_t hook(uint32_t r)
         NOPE("AMM: Tried to send in currency which is not present in AMM.");
 
     if (mapA == mapB)
-        NOPE("AMM: Internal error.");
+        NOPE("AMM: Internal error (2).");
 
     int64_t has_sent_A = 1;
 
@@ -595,7 +595,7 @@ int64_t hook(uint32_t r)
         int64_t ownership_B = float_divide(sent_amt_B, amm_amt_B);
 
         if (ownership_A <= 0 || ownership_B <= 0)
-            NOPE("AMM: Internal error.");
+            NOPE("AMM: Internal error (3).");
 
         int64_t ownership = float_divide(float_sum(ownership_A, ownership_B), 6090866696204910592ULL /* 2 */);
 
