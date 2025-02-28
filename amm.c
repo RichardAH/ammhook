@@ -459,10 +459,13 @@ int64_t hook(uint32_t r)
         (has_sent_B && sent_amt_B < 0))
             NOPE("AMM: Error reading sent amounts.");
 
-    // remit transactor should prevent this but check anyway
-    if (float_compare(sent_amt_A, 0, COMPARE_LESS | COMPARE_EQUAL) == 1 ||
-        (has_sent_B && float_compare(sent_amt_B, 0, COMPARE_LESS | COMPARE_EQUAL) == 1))
-        NOPE("AMM: Amounts must be positive non-zero.");
+    // check for trivial/dust amounts
+    // we can do this by dividing the amount by 10000 and seeing if it undeflows to 0
+    int64_t sent_amt_A_test = float_divide(sent_amt_A, 6161924290242838528ULL /* 10000 */);
+    int64_t sent_amt_B_test = float_divide(sent_amt_B, 6161924290242838528ULL /* 10000 */);
+    if (float_compare(sent_amt_A_test, 0, COMPARE_LESS | COMPARE_EQUAL) == 1 ||
+        (has_sent_B && float_compare(sent_amt_B_test, 0, COMPARE_LESS | COMPARE_EQUAL) == 1))
+        NOPE("AMM: Amounts must be positive, non-dust, non-zero.");
 
     // check if the AMM has been setup yet
     if (!already_setup)
