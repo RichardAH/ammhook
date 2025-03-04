@@ -1,5 +1,6 @@
 #include "hookapi.h"
 #define ttREMIT 95
+#define MAX_EMIT_RETRIES 5
 #define DONE(x)\
     return accept(x, sizeof(x), __LINE__);
 #define NOPE(x)\
@@ -104,7 +105,9 @@ uint8_t txn_remit[60000] =
 
 #define DEBUG 1 
 
-#define DO_REMIT(early)\
+// warning:
+// the xflA and xflB populate only the emit stub, not the emit template
+#define DO_REMIT(early, xflA, xflB, retry_count)\
 {\
         int64_t bytes = 336;\
         if (early)\
@@ -133,6 +136,245 @@ uint8_t txn_remit[60000] =
             TRACEVAR(emit_result);\
         if (emit_result < 0)\
             rollback(SBUF("AMM: Emit failed."), __LINE__);\
+        {\
+            uint8_t emit_stub[41]; /* 20 bytes of accid, 4 bytes of ledger seq, 8 bytes xflA, 8 bytes xflB, 
+                                      1 byte retry count */\
+            emit_stub[40] = (retry_count);\
+            COPY20(OTXNACC, emit_stub);\
+            *((uint32_t*)(emit_stub + 20)) = ledger_seq();\
+            *((uint64_t*)(emit_stub + 24)) = xflA;\
+            *((uint64_t*)(emit_stub + 32)) = xflB;\
+            state(SBUF(emit_stub), SBUF(emithash));\
+            uint32_t currently_pending_emits = 0;\
+            state(SVAR(currently_pending_emits), "PEND", 4);\
+            currently_pending_emits++;\
+            state_set(SVAR(currently_pending_emits), "PEND", 4);\
+        }\
+}
+
+#define CBAK_DONE(x)\
+{\
+    state_set(0,0, SBUF(tid)); /* remove state entry, decrement pending emitted txn counter */\
+    if (currently_pending_emits - 1 > currently_pending_emits)\
+        currently_pending_emits = 0;\
+    else\
+        currently_pending_emits--;\
+    state_set(SVAR(currently_pending_emits), "PEND", 4);\
+    DONE(x);\
+}
+
+#define owner_lp owner_data[0]
+#define owner_fee_setting owner_data[1]
+
+int64_t cbak(uint32_t f)
+{
+    uint8_t tid[32];
+    otxn_id(SBUF(tid), f == 1);
+
+    // we're going to reuse some of the template memory to avoid copying
+    uint8_t* stub_ext = OTXNACC - 1;
+    uint8_t* stub = stub_ext + 1;
+
+    // remit stub consists of: 
+    //  20 byte accid, 
+    //  4 byte ledger seq number (that it was emitted in), 
+    //  8 byte amt A XFL LE
+    //  8 byte amt B XFL LE
+    //  1 byte retry count (if this is the second time this emit has been tried for example)
+
+    // stub_ext is the stub array with a P on the front, which avoids an unnecessary accid copy
+    // in the event of a failed trade. we use that memory as the key to make a credit stub so the
+    // emit can be retried.
+
+    if (state(stub, 41, SBUF(tid)) != 41)
+    {
+        if (f == 1)
+            DONE("AMM: Emit failured detected but missing state entry to link it to an account.");
+        DONE("AMM: Emit callback but missing state entry to link it to an account.");
+    }
+    
+    uint32_t currently_pending_emits = 0;
+    state(SVAR(currently_pending_emits), "PEND", 4);
+
+    int64_t owner_data[2] = { 0, 0 }; 
+    
+    owner_fee_setting = 6035823500676464640ULL /* 0.001 - default (0.1%), min=0 (0%), max=0.05 (5%) */;
+
+    // this sets owner_lp and owner_fee_setting
+    state(SVAR(owner_data), stub, 20);
+
+    uint64_t sent_amt_A = *((uint64_t*)(stub + 24));
+    uint64_t sent_amt_B = *((uint64_t*)(stub + 32));
+    
+    uint64_t A_is_zero = float_compare(sent_amt_A, 0, COMPARE_LESS | COMPARE_EQUAL) == 1;
+    uint64_t B_is_zero = float_compare(sent_amt_B, 0, COMPARE_LESS | COMPARE_EQUAL) == 1;
+
+    if (f == 0 || (A_is_zero && B_is_zero))
+    {
+        // the withdrawal was successful, or the amount withdrawn was 0 anyway
+        
+        // clean up the LAST_CUR stub if this is the last emit and it was successful
+        if (currently_pending_emits == 1)
+        {
+            state_set(0,0, "LAST_CUR", 8);
+            state_set(0,0, "LAST_FEE", 8);
+        }
+
+        CBAK_DONE("AMM: Emit callback successful.");
+    }
+
+    // execution to here means the Remit failed. We need to re-credit the user's tokens, which is a little involved
+    uint8_t ammcur[80];
+    int64_t already_setup = (state(SBUF(ammcur), "CUR", 3) == 80);
+
+    // first lets check if the AMM still exists... it's possible this was the final withdrawal, in which case we need
+    // to recreate the whole AMM
+    if (!already_setup)
+    {
+        // we do this using the LAST_CUR stub left behind by the deletion routine
+        if (state(SBUF(ammcur), "LAST_CUR", 8) != 80)
+            NOPE("AMM: Emit failed, and AMM was deleted but no LAST_CUR stub detected. Bailing.");
+
+        // sanity check: the final withdrawal must be a two sided withdrawal.
+        if (A_is_zero || B_is_zero)
+            NOPE("AMM: Cannot re-create AMM from failed one sided withdrawal.");
+
+        // when the AMM is deleted the last fee is recorded here, so pull it back out
+        state(SVAR(owner_fee_setting), "LAST_FEE", 8);
+
+        // geometric mean constant
+        int64_t G = float_multiply(sent_amt_A, sent_amt_B);
+
+        TRACEXFL(G);
+        TRACEXFL(sent_amt_A);
+        TRACEXFL(sent_amt_B);
+        
+        // set their liquidity tokens as a state entry
+        owner_lp = 6125895493223874560ULL /* 100 arbitrary liquidity units */;
+        
+        // compute the fee accumulator
+        int64_t amm_fee_accumulator = float_multiply(owner_lp, owner_fee_setting);
+        if (amm_fee_accumulator < 0)
+            NOPE("AMM: Error computing initial fee accumulator (C)");
+        
+        if (state_set(SBUF(ammcur), "CUR", 3) != 80 ||
+            state_set(SVAR(sent_amt_A), "A", 1) != 8 ||
+            state_set(SVAR(sent_amt_B), "B", 1) != 8 ||
+            state_set(SVAR(G), "G", 1) != 8 ||
+            state_set(SVAR(amm_fee_accumulator), "FAC", 3) != 8 ||
+            // remembering that owner_data is an array containing owner_lp and owner_fee_setting
+            state_set(SVAR(owner_data), stub, 20) != 16 ||
+            // the current total LP count is just the first member's token count
+            state_set(SVAR(owner_lp), "TOT", 3) != 8)
+            NOPE("AMM: Error setting initial state (reserves?) (C)");
+
+        CBAK_DONE("AMM: AMM was recreated due to failed final emit. (Only true is this txn is tesSUCCESS.)");
+    }
+
+    // execution to here means the AMM still exists, so fetch their entry
+
+    // either they were trading with the AMM, in which case one of the currencies will be 0
+    // or they were withdrawing from the AMM in which case both will be non-zero
+   
+    // undo their withdrawal or trading
+    int64_t amm_amt_A, amm_amt_B, G, total_lp, amm_fee_accumulator, owner_fac_contribution;
+    
+    // Load current AMM state
+    if (!(state(SVAR(amm_amt_A), "A", 1) == 8 &&
+          state(SVAR(amm_amt_B), "B", 1) == 8 &&
+          state(SVAR(G), "G", 1) == 8 &&
+          state(SVAR(total_lp), "TOT", 3) == 8 &&
+          state(SVAR(amm_fee_accumulator), "FAC", 3) == 8))
+        NOPE("AMM: Error loading hook state during emit failure reversal.");
+    
+    if (!A_is_zero && !B_is_zero)
+    {
+        // This is a withdrawal reversal
+        // sent_amt_A and sent_amt_B (from stub+24 and stub+32) represent 
+        // the amounts that were being withdrawn but failed to reach the user
+        
+        // Calculate what proportion of the pool these amounts represent in the current state
+        int64_t proportion_A = float_divide(sent_amt_A, float_sum(amm_amt_A, sent_amt_A));
+        int64_t proportion_B = float_divide(sent_amt_B, float_sum(amm_amt_B, sent_amt_B));
+        
+        // Average the proportions to get a fair representation of their ownership
+        int64_t avg_proportion = float_divide(
+            float_sum(proportion_A, proportion_B), 
+            6090866696204910592ULL /* 2.0 */
+        );
+        
+        // Calculate LP tokens based on current total and the proportion
+        int64_t lp_to_credit = float_divide(
+            float_multiply(total_lp, avg_proportion),
+            float_sum(6089866696204910592ULL /* 1.0 */, float_negate(avg_proportion))
+        );
+        
+        // Update the user's LP balance - owner_lp was already loaded from state through owner_data
+        owner_lp = float_sum(owner_lp, lp_to_credit);
+        
+        // Update total LP in circulation
+        total_lp = float_sum(total_lp, lp_to_credit);
+        
+        // Add the amounts back to the reserves
+        amm_amt_A = float_sum(amm_amt_A, sent_amt_A);
+        amm_amt_B = float_sum(amm_amt_B, sent_amt_B);
+        
+        // Recompute geometric mean constant
+        G = float_multiply(amm_amt_A, amm_amt_B);
+        
+        // Update fee accumulator with the user's contribution
+        // The fee setting was already loaded at the beginning of cbak function
+        owner_fac_contribution = float_multiply(owner_lp, owner_fee_setting);
+        amm_fee_accumulator = float_sum(amm_fee_accumulator, owner_fac_contribution);
+        
+        TRACESTR("AMM: Reversing withdrawal");
+        TRACEXFL(sent_amt_A);
+        TRACEXFL(sent_amt_B);
+        TRACEXFL(lp_to_credit);
+    
+        // Validate results
+        if (amm_amt_A <= 0 || amm_amt_B <= 0 || total_lp < 0)
+            NOPE("AMM: Error computing values during failed operation recovery.");
+        
+        // Recompute geometric mean constant
+        G = float_multiply(amm_amt_A, amm_amt_B);
+    
+        // Update the AMM state with restored values
+        if (state_set(SVAR(amm_amt_A), "A", 1) != 8 ||
+            state_set(SVAR(amm_amt_B), "B", 1) != 8 ||
+            state_set(SVAR(G), "G", 1) != 8 ||
+            state_set(SVAR(total_lp), "TOT", 3) != 8 ||
+            state_set(SVAR(amm_fee_accumulator), "FAC", 3) != 8 ||
+            state_set(SVAR(owner_data), stub, 20) != 16)
+            NOPE("AMM: Error restoring AMM state after failed operation.");
+    
+        CBAK_DONE("AMM: Restored state after failed withdrawal operation.");
+    }
+
+    
+    // Execution to here means it was a failed trade    
+    // Trading can't be reversed because the user is transient and has no "account" with the
+    // hook to credit. So rather than trying to reverse it and send back out the original amount
+    // we'll create a credit stub for them, that they can fetch with an empty remit.
+
+    // credit stub is:
+    //  8 byte XFL LE amm_amt_A, 
+    //  8 byte XFL LE amm_amt_B,
+    //  1 byte retry count,
+    //  and is's keyed on 0x14, <accid> (21 bytes)
+    // note that a credit stub is different to an emit stub
+    // the emit stub is created when the hook emits a txn and is keyed against the emitted txn id
+    // the credit stub is created when the emitted txn failed and it was for a trade, so the AMM
+    // owes the user a retry of the emit. The credit stub is keyed with a 0x14 followed by the 20 byte acc id.
+    
+    if (stub[40]++ > MAX_EMIT_RETRIES)
+    {
+        // retry count is too high, they forfeit
+        CBAK_DONE("AMM: You emit failed for the final possible time. Credit is forfeit.");
+    }
+
+    state_set(stub + 24, 17, stub_ext, 21);
+    CBAK_DONE("AMM: Your emit failed. Send empty Remit to try again.");
 }
 
 int64_t hook(uint32_t r)
@@ -153,7 +395,25 @@ int64_t hook(uint32_t r)
     
     if (tt != ttREMIT)
         DONE("AMM: Passing non-REMIT txn.");
-   
+
+    // first ensure they have not transferred any URITokens with the remit
+    // because this is an attack vector, can use up all the directory space in the AMM
+    
+    otxn_slot(1);
+
+    if (slot_subfield(1, sfMintURIToken, 2) == 2 || slot_subfield(1, sfURITokenIDs, 2) == 2)
+        NOPE("AMM: Cannot accept REMIT with URITokens.");
+    
+    // check how many currencies were sent
+    int64_t sent_currency_count = 
+        slot_subfield(1, sfAmounts, 2) == 2
+        ?  slot_count(2)
+        : 0;
+
+    // valid numbers of currencies are 0, 1 and 2, depending on what's happening, more than 2 is always an error
+    if (sent_currency_count < 0 || sent_currency_count > 2)
+        NOPE("AMM: Send either 0 (withdraw), 1 (trade) or 2 (deposit) currencies to use AMM.");
+    
     // if the AMM is already setup grab the currency information for it 
     #define amm_cur_A ammcur
     #define amm_cur_B (ammcur + 40)
@@ -162,6 +422,99 @@ int64_t hook(uint32_t r)
 
     int64_t A_is_xah = ISZERO20(amm_cur_A);
     int64_t B_is_xah = ISZERO20(amm_cur_B);
+
+  
+    // Check if this user has a credit stub (from a previous failed trade remit)
+    // if they do then the AMM is blocked to them until either the credit is claimed or forfeit
+    // We need to query the user's account with a 0x14 at the first byte, but happily that's how
+    // it appears in the template memory already so we just need to back the pointer up by one
+    uint8_t credit_stub[17];
+    if (state(SBUF(credit_stub), OTXNACC-1, 21) == 17)
+    {
+        // a credit stub exists for this user
+        if (sent_currency_count > 0)
+            NOPE("AMM: You have pending funds to claim. Send an empty REMIT transaction first. "
+                "Use SKIPCREDIT parameter on empty REMIT to cancel after next attempt if stuck.");
+
+        // check if they opt to forfeit the credit on failed retry
+        uint8_t retry_count = credit_stub[16];
+        uint8_t skip_credit = 0;
+        if (otxn_param(SVAR(skip_credit), "SKIPCREDIT", 10) == 1 && skip_credit != 0)
+            credit_stub[16] = MAX_EMIT_RETRIES + 1; // this will force next retry to be the last
+
+        uint64_t owed_amt_A = *((uint64_t*)(credit_stub));
+        uint64_t owed_amt_B = *((uint64_t*)(credit_stub + 8));
+        
+        // Check if either amount is non-zero
+        uint64_t A_is_zero = float_compare(owed_amt_A, 0, COMPARE_LESS | COMPARE_EQUAL) == 1;
+        uint64_t B_is_zero = float_compare(owed_amt_B, 0, COMPARE_LESS | COMPARE_EQUAL) == 1;
+        
+        if (!already_setup)
+        {
+            // RH NOTE: This should never happen, but if it does remove the stub and pass the txn
+            state_set(0,0, OTXNACC-1, 21);
+            DONE("AMM: Cannot process accounts payable as AMM no longer exists.");
+        }
+        
+        int64_t A_is_xah = ISZERO20(amm_cur_A);
+        int64_t B_is_xah = ISZERO20(amm_cur_B);
+        
+        // Create remit with the owed amounts
+        if (!A_is_zero) 
+        {
+            // They were trading for currency A
+            if (A_is_xah)
+                float_sto(TXN_CUR_A + 1, 8, 0, 0, 0, 0, XAH_TO_DROPS(owed_amt_A), 0);
+            else
+            {
+                ENSURE_TRUSTLINE_EXISTS(ammcur + 0, ammcur + 20);
+                float_sto(TXN_CUR_A, 49, ammcur + 0, 20, ammcur + 20, 20, owed_amt_A, sfAmount);
+            }
+        }
+        
+        if (!B_is_zero)
+        {
+            // They were trading for currency B
+            if (!A_is_zero)
+            {
+                // Two-sided payable - unlikely but possible in case both sides were being paid out
+                if (B_is_xah)
+                    float_sto(TXN_CUR_B + 1, 8, 0, 0, 0, 0, XAH_TO_DROPS(owed_amt_B), 0);
+                else
+                {
+                    ENSURE_TRUSTLINE_EXISTS(ammcur + 40, ammcur + 60);
+                    float_sto(TXN_CUR_B, 49, ammcur + 40, 20, ammcur + 60, 20, owed_amt_B, sfAmount);
+                }
+                
+                // Emit both currencies
+                DO_REMIT(0, owed_amt_A, owed_amt_B, retry_count);
+            }
+            else
+            {
+                // Only B is owed
+                if (B_is_xah)
+                    float_sto(TXN_CUR_A + 1, 8, 0, 0, 0, 0, XAH_TO_DROPS(owed_amt_B), 0);
+                else
+                {
+                    ENSURE_TRUSTLINE_EXISTS(ammcur + 40, ammcur + 60);
+                    float_sto(TXN_CUR_A, 49, ammcur + 40, 20, ammcur + 60, 20, owed_amt_B, sfAmount);
+                }
+                
+                // Emit only one currency
+                DO_REMIT(1, owed_amt_B, 0, retry_count);
+            }
+        }
+        else
+        {
+            // Only A is owed
+            DO_REMIT(1, owed_amt_A, 0, retry_count);
+        }
+        
+        // remove the stub since we've emitted a txn
+        state_set(0,0, OTXNACC-1, 21);
+        DONE("AMM: Emitted credit for previously failed emit.");
+    }
+
 
     // grab the amounts, constant and current outstanding liquidity points
     int64_t amm_amt_A, amm_amt_B, G, total_lp;
@@ -176,12 +529,14 @@ int64_t hook(uint32_t r)
 
     // owner data is packed int64_t LE sent and retrieved in memory format from hook state
     int64_t owner_data[2] = { 0, 0 }; 
-    #define owner_lp owner_data[0]
-    #define owner_fee_setting owner_data[1]
-    
+    //#define owner_lp owner_data[0]
+    //#define owner_fee_setting owner_data[1]
+
     // grab the user's liquidity tokens, and fee setting, if these are set
     // this sets owner_lp and owner_fee_setting
     state(SVAR(owner_data), OTXNACC, 20);
+
+    uint64_t seq = ledger_seq() + 1;
 
     int64_t amm_fee_accumulator = 0;
 
@@ -222,24 +577,7 @@ int64_t hook(uint32_t r)
     uint8_t isu[20];
     uint8_t cur[20];
 
-    // first ensure they have not transferred any URITokens with the remit
-    // because this is an attack vector, can use up all the directory space in the AMM
-    
-    otxn_slot(1);
 
-    if (slot_subfield(1, sfMintURIToken, 2) == 2 || slot_subfield(1, sfURITokenIDs, 2) == 2)
-        NOPE("AMM: Cannot accept REMIT with URITokens.");
-    
-    // check how many currencies were sent
-    int64_t sent_currency_count = 
-        slot_subfield(1, sfAmounts, 2) == 2
-        ?  slot_count(2)
-        : 0;
-
-    // valid numbers of currencies are 0, 1 and 2, depending on what's happening, more than 2 is always an error
-    if (sent_currency_count < 0 || sent_currency_count > 2)
-        NOPE("AMM: Send either 0 (withdraw), 1 (trade) or 2 (deposit) currencies to use AMM.");
-   
     // First operation we'll deal with is a withdrawal. This happens if they send an empty remit.
     // All of their LP tokens are converted to currency and remitted back to them, unless WDR is specified
     // containing the number of LP tokens to liquidate, in which case a partial withdrawal is actioned.
@@ -358,6 +696,15 @@ int64_t hook(uint32_t r)
         if (total_lp < 0)
             NOPE("AMM: Error computing total_lp");
 
+        int64_t is_final_withdrawal = (float_compare(total_lp, 0, COMPARE_LESS | COMPARE_EQUAL) == 1);
+
+        uint32_t currently_pending_emits = 0;
+        state(SVAR(currently_pending_emits), "PEND", 4);
+
+        // prevent a nasty race condition where the AMM is re-created in cbak using a failed one-sided remit
+        if (currently_pending_emits > 0 && is_final_withdrawal)
+            NOPE("AMM: The final withdrawal from an AMM pool can only be made after "
+                    "all other pending withdrawals are complete. Try again in a bit.");
 
         // compute the new values
         amm_amt_A = send_all_A ? 0 : float_sum(amm_amt_A, float_negate(out_amt_A));
@@ -367,7 +714,7 @@ int64_t hook(uint32_t r)
         if (remain_percent == 0)
             state_set(0,0, OTXNACC, 20);
             
-        if (float_compare(total_lp, 0, COMPARE_LESS | COMPARE_EQUAL) == 1)
+        if (is_final_withdrawal)
         {
             // this is the final withdrawal, so remove setup information
 
@@ -378,6 +725,13 @@ int64_t hook(uint32_t r)
             state_set(0,0, "CUR", 3);
             state_set(0,0, "G", 1);
             state_set(0,0, "FAC", 3);
+
+            // leave behind a stub indicating which currency pair was used
+            // at the time of deletion in case the emit fails and we need to
+            // rebuild the amm we'll clean this up at the callback if the emit
+            // is successful
+            state_set(SBUF(ammcur), "LAST_CUR", 8);
+            state_set(SVAR(owner_fee_setting), "LAST_FEE", 8);
         }
         else
         { 
@@ -416,7 +770,8 @@ int64_t hook(uint32_t r)
             float_sto(TXN_CUR_B, 49, ammcur + 40, 20, ammcur + 60, 20, out_amt_B, sfAmount);
         }
 
-        DO_REMIT(0);
+        DO_REMIT(0, out_amt_A, out_amt_B, 0);
+
 
         DONE("AMM: Emitted withdraw.");
         return 0;
@@ -473,6 +828,10 @@ int64_t hook(uint32_t r)
         // not setup, so whatever they sent is the first liquidity and sets the rate
         if (!has_sent_B)
             NOPE("AMM: Cannot setup new AMM without two currencies. Send two.");
+
+        uint8_t dummy[80];
+        if (state(SVAR(dummy), "LAST_CUR", 8) == 80)
+            NOPE("AMM: Cannot setup new AMM until final withdrawal is finalized from previous AMM.");
 
         // the format for the packed data is
         // [ 20 byte currency code A ][ 20 byte issuer A or 0's for XAH ]
@@ -685,6 +1044,8 @@ int64_t hook(uint32_t r)
             ENSURE_TRUSTLINE_EXISTS(ammcur + 40, ammcur + 60);
             float_sto(TXN_CUR_A, 49, ammcur +  40, 20, ammcur + 60, 20, diff_B, sfAmount);
         }
+        
+        DO_REMIT(1, diff_B, 0, 0);
     }
     else
     {
@@ -729,9 +1090,10 @@ int64_t hook(uint32_t r)
             ENSURE_TRUSTLINE_EXISTS(ammcur + 0, ammcur + 20);
             float_sto(TXN_CUR_A, 49, ammcur +  0, 20, ammcur + 20, 20, diff_A, sfAmount);
         }
+    
+        DO_REMIT(1, diff_A, 0, 0);
     }
 
-    DO_REMIT(1);
     DONE("AMM: Emitted remit currency B.");
     return 0;
 }
