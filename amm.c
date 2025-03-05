@@ -62,29 +62,30 @@ uint8_t txn_remit[60000] =
 /*  35,  34 */   0x73U, 0x21U, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,       /* pubkey   */
 /*  22,  69 */   0x81U, 0x14U, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,                                  /* srcacc  */
 /*  22,  91 */   0x83U, 0x14U, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,                                  /* dstacc  */
-/* 116, 113 */   0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,    /* emit detail */
+/* 138, 113 */   0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,    /* emit detail */
                  0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
                  0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+                 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
 
-/*   2, 229 */  0xF0U, 0x5CU,                                                               /* lead-in amount array */
-/*   2, 231 */  0xE0U, 0x5BU,                                                               /*lead-in amount entry A*/
-/*  49, 233 */  0x61U,
+/*   2, 251 */  0xF0U, 0x5CU,                                                               /* lead-in amount array */
+/*   2, 253 */  0xE0U, 0x5BU,                                                               /*lead-in amount entry A*/
+/*  49, 255 */  0x61U,
                 0x99,0x99,0x99,0x99,0x99,0x99,0x99,0x99,
                 0x99,0x99,0x99,0x99,0x99,0x99,0x99,0x99,0x99,0x99,0x99,0x99,0x99,0x99,0x99,0x99,0x99,0x99,0x99,0x99,
                 /* amount A */
                 0x99,0x99,0x99,0x99,0x99,0x99,0x99,0x99,0x99,0x99,0x99,0x99,0x99,0x99,0x99,0x99,0x99,0x99,0x99,0x99,
-/*   3, 282 */  0xE1, 0xE0U, 0x5BU,                                                         /*lead-in amount entry B*/
-/*  49, 285 */  0x61U,
+/*   3, 304 */  0xE1, 0xE0U, 0x5BU,                                                         /*lead-in amount entry B*/
+/*  49, 307 */  0x61U,
                 0x99,0x99,0x99,0x99,0x99,0x99,0x99,0x99,0x99,0x99,0x99,0x99,0x99,0x99,
                 0x99,0x99,0x99,0x99,0x99,0x99,0x99,0x99,0x99,0x99,0x99,0x99,0x99,0x99,      /* amount B */
                 0x99,0x99,0x99,0x99,0x99,0x99,0x99,0x99,0x99,0x99,0x99,0x99,0x99,0x99,
                 0x99,0x99,0x99,0x99,0x99,0x99,
-/*   2, 334 */  0xE1, 0xF1                                                 /* lead out, may also appear at end of A */
-/*   -, 336 */                
+/*   2, 356 */  0xE1, 0xF1                                                 /* lead out, may also appear at end of A */
+/*   -, 358 */                
 };
 
-#define TXN_CUR_A (txn_remit + 233)
-#define TXN_CUR_B (txn_remit + 285)
+#define TXN_CUR_A (txn_remit + 255)
+#define TXN_CUR_B (txn_remit + 307)
 #define OTXNACC (txn_remit + 93)
 #define HOOKACC (txn_remit + 71)
 #define TXN_EDET (txn_remit + 113)
@@ -109,13 +110,14 @@ uint8_t txn_remit[60000] =
 // the xflA and xflB populate only the emit stub, not the emit template
 #define DO_REMIT(early, xflA, xflB, retry_count)\
 {\
-        int64_t bytes = 336;\
+        int64_t bytes = 358;\
         if (early)\
         {\
-            txn_remit[283] = 0xF1U;\
-            bytes = 284;\
+            txn_remit[305] = 0xF1U;\
+            bytes = 306;\
         }\
-        etxn_details(TXN_EDET, 116);\
+        etxn_details(TXN_EDET, 138);\
+        trace(SBUF("to emit:"), txn_remit, bytes, 1);\
         int64_t fee = etxn_fee_base(txn_remit, bytes);\
         BE_DROPS(fee);\
         *((uint64_t*)(txn_remit + 26)) = fee;\
