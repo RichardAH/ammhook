@@ -398,6 +398,21 @@ int64_t hook(uint32_t r)
     if (tt != ttREMIT)
         DONE("AMM: Passing non-REMIT txn.");
 
+    // check account xah balance and refuse to do anything if it's not met
+    {
+        uint8_t keylet[34];
+        int64_t bal_xfl = 0;
+        if (util_keylet(keylet, 34, KEYLET_ACCOUNT, OTXNACC, 20, 0,0,0,0) != 34 || 
+            slot_set(keylet, 34, 99) != 99 ||
+            slot_subfield(99, sfBalance, 99) != 99 ||
+            (bal_xfl = slot_float(99)) < 0)
+            NOPE("AMM: Internal error accroot slot/keylet");
+
+        if (float_compare(bal_xfl, 6107881094714392576ULL /* 10.0 XAH */, COMPARE_LESS))
+           NOPE("AMM: Insufficient XAH balance in hook account. Top up using a ttPayment to continue using.");
+    } 
+
+
     // first ensure they have not transferred any URITokens with the remit
     // because this is an attack vector, can use up all the directory space in the AMM
     
